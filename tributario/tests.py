@@ -8,6 +8,7 @@ from django.core.files.base import ContentFile
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core import mail
 from django.test import SimpleTestCase, TestCase, override_settings
+from django.urls import reverse
 from rest_framework.test import APIClient
 
 from .models import ApprovalRequest, TaxRecord, UserProfile
@@ -79,6 +80,27 @@ class SecurityAndAccessTests(TestCase):
         self.assertEqual(response.data['user']['profile']['role'], 'auditor')
         created = User.objects.get(email='new.user@nuam.test')
         self.assertTrue(created.check_password(response.data['temporary_password']))
+
+    def test_authenticated_user_can_set_their_name(self):
+        self.client.force_authenticate(self.operator)
+        invalid = self.client.patch(
+            '/api/v1/auth/me/',
+            {'first_name': ' ', 'last_name': ''},
+            format='json',
+        )
+        self.assertEqual(invalid.status_code, 400)
+
+        response = self.client.patch(
+            '/api/v1/auth/me/',
+            {'first_name': 'Vicente', 'last_name': 'Veraniego'},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.operator.refresh_from_db()
+        self.assertEqual(self.operator.first_name, 'Vicente')
+        self.assertEqual(self.operator.last_name, 'Veraniego')
+        self.assertEqual(response.data['first_name'], 'Vicente')
 
     def test_role_restrictions_apply_to_api(self):
         self.client.force_authenticate(self.operator)
@@ -219,6 +241,54 @@ class SecurityAndAccessTests(TestCase):
         storage.save(stored_name, ContentFile(b'tampered bytes'))
         blocked = self.client.get(f'/api/v1/tax-records/{record.pk}/download_pdf/')
         self.assertEqual(blocked.status_code, 409)
+
+
+@override_settings(STORAGES={
+    'default': {'BACKEND': 'django.core.files.storage.InMemoryStorage'},
+    'staticfiles': {'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage'},
+})
+class AdminUserCreationTests(TestCase):
+    def setUp(self):
+        admin_user = User.objects.create_superuser(
+            username='django-admin',
+            email='django-admin@nuam.test',
+            password='Strong-Admin-Password-123!',
+        )
+        self.client.force_login(admin_user)
+
+    def test_admin_home_has_direct_create_user_action(self):
+        response = self.client.get(reverse('admin:index'))
+
+        self.assertContains(response, 'Hola, django-admin')
+        self.assertContains(response, 'Crear usuario')
+        self.assertContains(response, reverse('admin:auth_user_add'))
+
+    def test_admin_creates_application_user_with_role_and_email(self):
+        add_url = reverse('admin:auth_user_add')
+        add_page = self.client.get(add_url)
+        add_form = add_page.context['adminform'].form
+        self.assertIn('email', add_form.fields)
+        self.assertIn('role', add_form.fields)
+        data = {
+            'username': 'new-operator',
+            'email': 'new.operator@nuam.test',
+            'first_name': 'Nuevo',
+            'last_name': 'Operador',
+            'role': 'operador',
+            'country': 'Chile',
+            'password1': 'F8!Kq3z#vR2mD7xL',
+            'password2': 'F8!Kq3z#vR2mD7xL',
+            '_save': 'Guardar',
+        }
+
+        response = self.client.post(add_url, data)
+
+        self.assertEqual(response.status_code, 302)
+        user = User.objects.get(email='new.operator@nuam.test')
+        self.assertTrue(user.check_password('F8!Kq3z#vR2mD7xL'))
+        self.assertEqual(user.profile.role, 'operador')
+        self.assertEqual(user.profile.country, 'Chile')
+        self.assertTrue(user.profile.is_2fa_enabled)
 
 
 class SupabaseStorageAuthHeaderTests(SimpleTestCase):

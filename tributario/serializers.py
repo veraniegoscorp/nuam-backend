@@ -19,6 +19,15 @@ class UserSerializer(serializers.ModelSerializer):
         fields = ['id', 'username', 'email', 'first_name', 'last_name', 'profile']
 
 
+class UserNameUpdateSerializer(serializers.ModelSerializer):
+    first_name = serializers.CharField(max_length=150, allow_blank=False)
+    last_name = serializers.CharField(max_length=150, allow_blank=True, required=False)
+
+    class Meta:
+        model = User
+        fields = ['first_name', 'last_name']
+
+
 class AdminUserCreateSerializer(serializers.Serializer):
     email = serializers.EmailField()
     full_name = serializers.CharField(max_length=150)

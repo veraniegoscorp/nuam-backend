@@ -22,6 +22,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from .models import UserProfile, TaxRecord, ApprovalRequest, AuditLog
 from .serializers import (
     UserSerializer,
+    UserNameUpdateSerializer,
     AdminUserCreateSerializer,
     TaxRecordListSerializer,
     TaxRecordDetailSerializer,
@@ -254,6 +255,12 @@ class CurrentUserView(APIView):
             user=request.user,
             defaults={'role': 'admin' if request.user.is_superuser else 'operador'},
         )
+        return Response(UserSerializer(request.user).data)
+
+    def patch(self, request):
+        serializer = UserNameUpdateSerializer(request.user, data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
         return Response(UserSerializer(request.user).data)
 
 

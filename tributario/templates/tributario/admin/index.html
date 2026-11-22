@@ -1,0 +1,96 @@
+{% extends "admin/base_site.html" %}
+{% load static log %}
+
+{% block extrastyle %}{{ block.super }}
+<link rel="stylesheet" href="{% static 'admin/css/dashboard.css' %}">
+<link rel="stylesheet" href="{% static 'tributario/admin_dashboard.css' %}">
+{% endblock %}
+
+{% block coltype %}colM{% endblock %}
+{% block bodyclass %}{{ block.super }} dashboard nuam-dashboard-body{% endblock %}
+{% block nav-breadcrumbs %}{% endblock %}
+{% block nav-sidebar %}{% endblock %}
+
+{% block content %}
+<div id="content-main" class="nuam-dashboard">
+  <section class="nuam-welcome">
+    <div>
+      <p class="nuam-kicker">NUAM · ADMINISTRACIÓN</p>
+      <h1>Hola, {{ user.get_short_name|default:user.username }}</h1>
+      <p>Administra las cuentas y accesos de tu equipo desde un solo lugar.</p>
+    </div>
+    {% if perms.auth.add_user %}
+      <a class="nuam-primary-action" href="{% url 'admin:auth_user_add' %}">Crear usuario</a>
+    {% endif %}
+  </section>
+
+  <section class="nuam-shortcuts" aria-label="Accesos rápidos">
+    {% if perms.auth.view_user %}
+      <article class="nuam-shortcut">
+        <span class="nuam-shortcut-icon users-icon" aria-hidden="true">U</span>
+        <h2>Usuarios</h2>
+        <p>Agrega personas y asigna sus permisos para NUAM.</p>
+        <div class="nuam-shortcut-links">
+          {% if perms.auth.add_user %}<a href="{% url 'admin:auth_user_add' %}">Crear usuario</a>{% endif %}
+          <a href="{% url 'admin:auth_user_changelist' %}">Ver usuarios</a>
+        </div>
+      </article>
+    {% endif %}
+    {% if perms.auth.view_group %}
+      <article class="nuam-shortcut">
+        <span class="nuam-shortcut-icon groups-icon" aria-hidden="true">P</span>
+        <h2>Grupos y permisos</h2>
+        <p>Organiza permisos para las cuentas del Django Admin.</p>
+        <div class="nuam-shortcut-links">
+          <a href="{% url 'admin:auth_group_changelist' %}">Ver grupos</a>
+          {% if perms.auth.add_group %}<a href="{% url 'admin:auth_group_add' %}">Crear grupo</a>{% endif %}
+        </div>
+      </article>
+    {% endif %}
+  </section>
+
+  <div class="nuam-dashboard-grid">
+    <section class="nuam-modules">
+      <div class="nuam-section-heading">
+        <h2>Herramientas</h2>
+        <p>Otros módulos disponibles para tu cuenta.</p>
+      </div>
+      <div class="nuam-app-list">
+        {% include "admin/app_list.html" with app_list=app_list show_changelinks=True %}
+      </div>
+    </section>
+
+    <aside class="nuam-activity">
+      <div class="nuam-section-heading">
+        <h2>Actividad reciente</h2>
+        <p>Tus últimos cambios en el panel.</p>
+      </div>
+      {% get_admin_log 5 as admin_log for_user user %}
+      {% if admin_log %}
+        <ul class="nuam-activity-list">
+          {% for entry in admin_log %}
+            <li>
+              <span class="nuam-activity-dot {% if entry.is_addition %}is-addition{% elif entry.is_deletion %}is-deletion{% endif %}" aria-hidden="true"></span>
+              <div>
+                {% if entry.get_admin_url %}
+                  <a href="{{ entry.get_admin_url }}">{{ entry.object_repr }}</a>
+                {% else %}
+                  <strong>{{ entry.object_repr }}</strong>
+                {% endif %}
+                <small>
+                  {% if entry.content_type %}{{ entry.content_type.name|capfirst }}{% else %}Registro{% endif %}
+                  · {{ entry.action_time|date:"d/m/Y H:i" }}
+                </small>
+              </div>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p class="nuam-no-activity">Las acciones que realices aparecerán aquí.</p>
+      {% endif %}
+    </aside>
+  </div>
+</main>
+{% endblock %}
+
+{% block sidebar %}{% endblock %}

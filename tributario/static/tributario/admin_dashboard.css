@@ -1,0 +1,296 @@
+.nuam-dashboard {
+  max-width: 1480px;
+  margin: 0 auto;
+  padding: 8px 10px 36px;
+  color: var(--body-fg);
+}
+
+.nuam-welcome {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 30px 34px;
+  border: 1px solid var(--hairline-color);
+  border-radius: 16px;
+  background: linear-gradient(120deg, var(--secondary), var(--primary));
+  color: var(--primary-fg);
+}
+
+.nuam-welcome h1 {
+  margin: 0;
+  color: inherit;
+  font-size: clamp(24px, 3vw, 34px);
+  font-weight: 700;
+  letter-spacing: -0.5px;
+}
+
+.nuam-welcome p {
+  margin: 8px 0 0;
+  color: inherit;
+  opacity: 0.86;
+  font-size: 14px;
+}
+
+.nuam-welcome .nuam-kicker {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1.4px;
+  opacity: 0.72;
+}
+
+.nuam-primary-action {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0 18px;
+  border: 1px solid var(--primary-fg);
+  border-radius: 8px;
+  background: var(--primary-fg);
+  color: var(--secondary);
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.nuam-primary-action:hover {
+  color: var(--secondary);
+  box-shadow: 0 5px 16px #0002;
+  transform: translateY(-1px);
+}
+
+.nuam-shortcuts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin: 18px 0 24px;
+}
+
+.nuam-shortcut,
+.nuam-modules,
+.nuam-activity {
+  min-width: 0;
+  padding: 20px;
+  border: 1px solid var(--hairline-color);
+  border-radius: 12px;
+  background: var(--body-bg);
+}
+
+.nuam-shortcut {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-content: start;
+  column-gap: 13px;
+}
+
+.nuam-shortcut-icon {
+  display: grid;
+  grid-row: span 3;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 11px;
+  background: var(--darkened-bg);
+  color: var(--link-fg);
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.nuam-shortcut h2,
+.nuam-section-heading h2 {
+  margin: 0;
+  color: var(--body-fg);
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.nuam-shortcut p,
+.nuam-section-heading p {
+  margin: 6px 0 0;
+  color: var(--body-fg);
+  opacity: 0.72;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.nuam-shortcut-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 15px;
+}
+
+.nuam-shortcut-links a {
+  color: var(--link-fg);
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.nuam-shortcut-links a:hover,
+.nuam-activity-list a:hover {
+  text-decoration: underline;
+}
+
+.nuam-dashboard-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.65fr) minmax(260px, 1fr);
+  align-items: start;
+  gap: 18px;
+}
+
+.nuam-section-heading {
+  margin-bottom: 16px;
+}
+
+.nuam-section-heading p {
+  margin-top: 4px;
+}
+
+.nuam-app-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  align-items: start;
+  gap: 12px;
+}
+
+.nuam-app-list .module {
+  overflow: hidden;
+  margin: 0;
+  border: 1px solid var(--hairline-color);
+  border-radius: 9px;
+  background: var(--body-bg);
+}
+
+.nuam-app-list .module table {
+  width: 100%;
+  margin: 0;
+}
+
+.nuam-app-list .module caption {
+  padding: 13px 15px;
+  background: var(--darkened-bg);
+  color: var(--body-fg);
+  font-size: 13px;
+  font-weight: 700;
+  text-align: left;
+}
+
+.nuam-app-list .module caption a.section {
+  color: var(--body-fg);
+  text-decoration: none;
+}
+
+.nuam-app-list .module th,
+.nuam-app-list .module td {
+  padding: 11px 14px;
+  border-top: 1px solid var(--hairline-color);
+  font-size: 12px;
+}
+
+.nuam-app-list .module th {
+  color: var(--body-fg);
+}
+
+.nuam-app-list .module td a {
+  text-decoration: none;
+}
+
+.nuam-activity-list {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.nuam-activity-list li {
+  display: grid;
+  grid-template-columns: 9px minmax(0, 1fr);
+  gap: 11px;
+  padding: 13px 0;
+  border-top: 1px solid var(--hairline-color);
+}
+
+.nuam-activity-list li:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.nuam-activity-dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--secondary);
+}
+
+.nuam-activity-dot.is-addition {
+  background: #2e9b72;
+}
+
+.nuam-activity-dot.is-deletion {
+  background: #c65a5a;
+}
+
+.nuam-activity-list a,
+.nuam-activity-list strong {
+  color: var(--link-fg);
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.nuam-activity-list small {
+  display: block;
+  margin-top: 4px;
+  color: var(--body-fg);
+  opacity: 0.65;
+  font-size: 11px;
+}
+
+.nuam-no-activity {
+  margin: 0;
+  padding: 14px;
+  border-radius: 8px;
+  background: var(--darkened-bg);
+  color: var(--body-fg);
+  opacity: 0.72;
+  font-size: 13px;
+}
+
+@media (max-width: 900px) {
+  .nuam-dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 620px) {
+  .nuam-dashboard {
+    padding: 4px 0 24px;
+  }
+
+  .nuam-welcome {
+    align-items: flex-start;
+    flex-direction: column;
+    padding: 24px 20px;
+  }
+
+  .nuam-shortcuts {
+    grid-template-columns: 1fr;
+  }
+
+  .nuam-shortcut,
+  .nuam-modules,
+  .nuam-activity {
+    padding: 16px;
+  }
+
+  .nuam-app-list {
+    grid-template-columns: 1fr;
+  }
+}

@@ -25,7 +25,7 @@ Los documentos PDF se guardan con un hash SHA-256 calculado en el servidor. Cada
 
 ## Correo 2FA
 
-El primer paso de acceso genera un código aleatorio de seis dígitos, lo envía al correo registrado y guarda únicamente su hash. Vence a los cinco minutos, permite hasta cinco intentos y solo se consume una vez. En local, sin `EMAIL_HOST`, Django imprime el correo en la consola; eso es únicamente para pruebas. Para entrega real configura `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `EMAIL_USE_TLS` y `DEFAULT_FROM_EMAIL`. No confirmes que el correo real funciona hasta probar un envío con el proveedor SMTP.
+El primer paso de acceso genera un código aleatorio de seis dígitos, lo envía al correo registrado y guarda únicamente su hash. Vence a los cinco minutos, permite hasta cinco intentos y solo se consume una vez. En local, sin `EMAIL_HOST`, Django imprime el correo en la consola; eso es únicamente para pruebas. Para entrega real configura `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_HOST_USER`, `EMAIL_HOST_PASSWORD`, `EMAIL_USE_TLS` y `DEFAULT_FROM_EMAIL`. Reinicia el backend después de modificar el `.env` para que cargue los cambios. No confirmes que el correo real funciona hasta probar un envío con el proveedor SMTP.
 
 ## Roles y autorización
 
