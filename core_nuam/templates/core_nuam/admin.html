@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NUAM · Panel administrativo</title>
+  <style>
+    :root { font-family: Inter, system-ui, -apple-system, sans-serif; color: #162033; background: #f4f7fb; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    header { height: 72px; padding: 0 32px; display: flex; align-items: center; justify-content: space-between; background: #fff; border-bottom: 1px solid #e4e9f2; }
+    .brand { color: #3157d5; font-weight: 900; letter-spacing: .08em; }
+    .logout { border: 0; background: transparent; color: #475569; cursor: pointer; font-weight: 700; }
+    main { max-width: 1180px; margin: 0 auto; padding: 32px 24px 48px; }
+    h1 { margin: 0 0 8px; font-size: 30px; }
+    .subtitle { color: #667085; margin: 0 0 24px; }
+    .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-bottom: 24px; }
+    .stat, .panel { background: #fff; border: 1px solid #e2e8f0; border-radius: 14px; }
+    .stat { padding: 18px; }
+    .stat strong { display: block; font-size: 28px; margin-top: 6px; }
+    .panel { overflow: hidden; }
+    .panel h2 { margin: 0; padding: 18px 20px; border-bottom: 1px solid #e8edf4; font-size: 18px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 14px 16px; border-bottom: 1px solid #edf1f6; }
+    th { color: #64748b; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+    tr:last-child td { border-bottom: 0; }
+    select { height: 38px; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; padding: 0 8px; }
+    .check { display: inline-flex; align-items: center; gap: 6px; }
+    .save { height: 38px; border: 0; border-radius: 8px; background: #3157d5; color: #fff; padding: 0 14px; font-weight: 800; cursor: pointer; }
+    .active { color: #15803d; font-weight: 800; }
+    .inactive { color: #b42318; font-weight: 800; }
+    @media (max-width: 760px) {
+      header { padding: 0 18px; }
+      main { padding: 24px 14px; }
+      .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .panel { overflow-x: auto; }
+      table { min-width: 760px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">NUAM</div>
+    <form method="post" action="/admin/logout/">{% csrf_token %}<button class="logout" type="submit">Cerrar sesión</button></form>
+  </header>
+  <main>
+    <h1>Panel administrativo</h1>
+    <p class="subtitle">Gestiona cuentas y revisa el estado de la plataforma.</p>
+    <section class="stats" aria-label="Resumen">
+      <div class="stat">Usuarios<strong>{{ stats.users }}</strong></div>
+      <div class="stat">Expedientes activos<strong>{{ stats.records }}</strong></div>
+      <div class="stat">Aprobaciones pendientes<strong>{{ stats.approvals }}</strong></div>
+      <div class="stat">Eventos auditados<strong>{{ stats.audit }}</strong></div>
+    </section>
+    <section class="panel">
+      <h2>Usuarios</h2>
+      <table>
+        <thead><tr><th>Usuario</th><th>Correo</th><th>Rol</th><th>Estado</th><th>Acción</th></tr></thead>
+        <tbody>
+          {% for target in users %}
+          <tr>
+            <td>{{ target.username }}</td>
+            <td>{{ target.email|default:"Sin correo" }}</td>
+            <td>
+              <form method="post">
+                {% csrf_token %}
+                <input type="hidden" name="user_id" value="{{ target.id }}">
+                <select name="role" aria-label="Rol de {{ target.username }}">
+                  {% for value, label in role_choices %}
+                  <option value="{{ value }}"{% if target.profile.role == value %} selected{% endif %}>{{ label }}</option>
+                  {% endfor %}
+                </select>
+            </td>
+            <td>
+              <label class="check"><input type="checkbox" name="is_active"{% if target.is_active %} checked{% endif %}> Activa</label>
+            </td>
+            <td><button class="save" type="submit">Guardar</button></td>
+              </form>
+          </tr>
+          {% empty %}
+          <tr><td colspan="5">No hay usuarios registrados.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>

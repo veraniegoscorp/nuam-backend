@@ -99,7 +99,7 @@ ROOT_URLCONF = 'core_nuam.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        'DIRS': [BASE_DIR / 'core_nuam' / 'templates'],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [

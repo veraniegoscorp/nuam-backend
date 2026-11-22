@@ -1,26 +1,18 @@
 """
 URL configuration for core_nuam project.
 """
-from django.contrib import admin
 from django.urls import path, include
-from django.conf import settings
-from django.conf.urls.static import static
 from django.http import JsonResponse
-from django.views.static import serve
+from .admin_views import admin_index, admin_login, admin_logout
 
 
 def health(request):
     return JsonResponse({'status': 'ok', 'service': 'nuam-backend'})
 
 urlpatterns = [
-    path('admin/', admin.site.urls),
+    path('admin/', admin_index, name='nuam-admin'),
+    path('admin/login/', admin_login, name='nuam-admin-login'),
+    path('admin/logout/', admin_logout, name='nuam-admin-logout'),
     path('api/v1/health/', health),
     path('api/v1/', include('tributario.urls')),
 ]
-
-urlpatterns += [
-    path('static/<path:path>', serve, {'document_root': settings.STATIC_ROOT}),
-]
-
-if settings.DEBUG:
-    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

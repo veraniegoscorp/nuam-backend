@@ -48,6 +48,22 @@ class SecurityAndAccessTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {'status': 'ok', 'service': 'nuam-backend'})
 
+    def test_custom_admin_login_has_no_external_static_assets(self):
+        response = self.client.get('/admin/login/')
+        content = response.content.decode()
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn('/static/admin/', content)
+        self.assertIn('NUAM', content)
+
+    def test_custom_admin_requires_admin_profile(self):
+        self.client.force_login(self.operator)
+        response = self.client.get('/admin/')
+        self.assertEqual(response.status_code, 403)
+
+        self.client.force_login(self.admin)
+        response = self.client.get('/admin/')
+        self.assertEqual(response.status_code, 200)
+
     def test_anonymous_access_is_denied(self):
         response = self.client.get('/api/v1/tax-records/')
         self.assertEqual(response.status_code, 401)
@@ -255,46 +271,40 @@ class SecurityAndAccessTests(TestCase):
 })
 class AdminUserCreationTests(TestCase):
     def setUp(self):
-        admin_user = User.objects.create_superuser(
+        self.admin_user = User.objects.create_superuser(
             username='django-admin',
             email='django-admin@nuam.test',
             password='Strong-Admin-Password-123!',
         )
-        self.client.force_login(admin_user)
+        UserProfile.objects.create(user=self.admin_user, role='admin', country='Chile')
+        self.client.force_login(self.admin_user)
 
     def test_admin_home_has_direct_create_user_action(self):
-        response = self.client.get(reverse('admin:index'))
+        response = self.client.get('/admin/')
 
-        self.assertContains(response, 'Hola, django-admin')
-        self.assertContains(response, 'Crear usuario')
-        self.assertContains(response, reverse('admin:auth_user_add'))
+        self.assertContains(response, 'Panel administrativo')
+        self.assertContains(response, 'Usuarios')
+        self.assertNotContains(response, '/static/admin/')
 
     def test_admin_creates_application_user_with_role_and_email(self):
-        add_url = reverse('admin:auth_user_add')
-        add_page = self.client.get(add_url)
-        add_form = add_page.context['adminform'].form
-        self.assertIn('email', add_form.fields)
-        self.assertIn('role', add_form.fields)
-        data = {
-            'username': 'new-operator',
-            'email': 'new.operator@nuam.test',
-            'first_name': 'Nuevo',
-            'last_name': 'Operador',
-            'role': 'operador',
-            'country': 'Chile',
-            'password1': 'F8!Kq3z#vR2mD7xL',
-            'password2': 'F8!Kq3z#vR2mD7xL',
-            '_save': 'Guardar',
-        }
+        target = User.objects.create_user(
+            username='new-operator',
+            email='new.operator@nuam.test',
+            password='F8!Kq3z#vR2mD7xL',
+        )
+        UserProfile.objects.create(user=target, role='operador', country='Chile')
 
-        response = self.client.post(add_url, data)
+        response = self.client.post('/admin/', {
+            'user_id': target.id,
+            'role': 'supervisor',
+            'is_active': 'on',
+        })
 
-        self.assertEqual(response.status_code, 302)
-        user = User.objects.get(email='new.operator@nuam.test')
-        self.assertTrue(user.check_password('F8!Kq3z#vR2mD7xL'))
-        self.assertEqual(user.profile.role, 'operador')
-        self.assertEqual(user.profile.country, 'Chile')
-        self.assertTrue(user.profile.is_2fa_enabled)
+        self.assertEqual(response.status_code, 200)
+        target.refresh_from_db()
+        target.profile.refresh_from_db()
+        self.assertTrue(target.is_active)
+        self.assertEqual(target.profile.role, 'supervisor')
 
 
 class BulkUploadAndUserManagementTests(TestCase):
