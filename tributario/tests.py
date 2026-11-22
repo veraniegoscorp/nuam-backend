@@ -287,24 +287,21 @@ class AdminUserCreationTests(TestCase):
         self.assertNotContains(response, '/static/admin/')
 
     def test_admin_creates_application_user_with_role_and_email(self):
-        target = User.objects.create_user(
-            username='new-operator',
-            email='new.operator@nuam.test',
-            password='F8!Kq3z#vR2mD7xL',
-        )
-        UserProfile.objects.create(user=target, role='operador', country='Chile')
-
         response = self.client.post('/admin/', {
-            'user_id': target.id,
-            'role': 'supervisor',
-            'is_active': 'on',
+            'action': 'create',
+            'full_name': 'Nuevo Operador',
+            'email': 'new.operator@nuam.test',
+            'role': 'operador',
+            'country': 'Chile',
         })
 
         self.assertEqual(response.status_code, 200)
+        target = User.objects.get(email='new.operator@nuam.test')
         target.refresh_from_db()
         target.profile.refresh_from_db()
         self.assertTrue(target.is_active)
-        self.assertEqual(target.profile.role, 'supervisor')
+        self.assertEqual(target.profile.role, 'operador')
+        self.assertContains(response, 'Contraseña temporal')
 
 
 class BulkUploadAndUserManagementTests(TestCase):

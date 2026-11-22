@@ -27,12 +27,19 @@
     select { height: 38px; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; padding: 0 8px; }
     .check { display: inline-flex; align-items: center; gap: 6px; }
     .save { height: 38px; border: 0; border-radius: 8px; background: #3157d5; color: #fff; padding: 0 14px; font-weight: 800; cursor: pointer; }
+    .create-grid { display: grid; grid-template-columns: 1.4fr 1.4fr 1fr 1fr auto; gap: 10px; padding: 16px 20px; align-items: end; }
+    .create-grid label { display: grid; gap: 6px; color: #475569; font-size: 13px; font-weight: 700; }
+    .create-grid input, .create-grid select { width: 100%; height: 40px; border: 1px solid #cbd5e1; border-radius: 8px; padding: 0 10px; background: #fff; }
+    .notice { margin: 14px 20px; padding: 12px 14px; border-radius: 8px; background: #eff6ff; color: #1e40af; }
+    .password { margin: 0 20px 16px; padding: 12px 14px; border: 1px solid #86efac; border-radius: 8px; background: #f0fdf4; color: #166534; }
+    .password code { font-size: 16px; user-select: all; }
     .active { color: #15803d; font-weight: 800; }
     .inactive { color: #b42318; font-weight: 800; }
     @media (max-width: 760px) {
       header { padding: 0 18px; }
       main { padding: 24px 14px; }
       .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .create-grid { grid-template-columns: 1fr; }
       .panel { overflow-x: auto; }
       table { min-width: 760px; }
     }
@@ -52,10 +59,38 @@
       <div class="stat">Aprobaciones pendientes<strong>{{ stats.approvals }}</strong></div>
       <div class="stat">Eventos auditados<strong>{{ stats.audit }}</strong></div>
     </section>
+    {% if message %}<div class="notice">{{ message }}</div>{% endif %}
+    {% if temporary_password %}
+    <div class="password">Contraseña temporal — cópiela ahora: <code>{{ temporary_password }}</code></div>
+    {% endif %}
+    <section class="panel">
+      <h2>Crear usuario</h2>
+      <form method="post" class="create-grid">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="create">
+        <label>Nombre completo<input name="full_name" maxlength="150" required></label>
+        <label>Correo<input name="email" type="email" maxlength="254" required></label>
+        <label>Rol
+          <select name="role">
+            {% for value, label in role_choices %}
+            <option value="{{ value }}">{{ label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>País
+          <select name="country">
+            {% for value, label in country_choices %}
+            <option value="{{ value }}">{{ label }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <button class="save" type="submit">Crear usuario</button>
+      </form>
+    </section>
     <section class="panel">
       <h2>Usuarios</h2>
       <table>
-        <thead><tr><th>Usuario</th><th>Correo</th><th>Rol</th><th>Estado</th><th>Acción</th></tr></thead>
+        <thead><tr><th>Usuario</th><th>Correo</th><th>Rol</th><th>Estado</th><th>2FA</th><th>Acción</th></tr></thead>
         <tbody>
           {% for target in users %}
           <tr>
@@ -64,6 +99,7 @@
             <td>
               <form method="post">
                 {% csrf_token %}
+                <input type="hidden" name="action" value="update">
                 <input type="hidden" name="user_id" value="{{ target.id }}">
                 <select name="role" aria-label="Rol de {{ target.username }}">
                   {% for value, label in role_choices %}
@@ -73,6 +109,9 @@
             </td>
             <td>
               <label class="check"><input type="checkbox" name="is_active"{% if target.is_active %} checked{% endif %}> Activa</label>
+            </td>
+            <td>
+              <label class="check"><input type="checkbox" name="is_2fa_enabled"{% if target.profile.is_2fa_enabled %} checked{% endif %}> Exigido</label>
             </td>
             <td><button class="save" type="submit">Guardar</button></td>
               </form>
