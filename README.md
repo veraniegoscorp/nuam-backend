@@ -36,3 +36,29 @@ CORS permite solo los orígenes locales indicados en `CORS_ALLOWED_ORIGINS`; no 
 ## Validación
 
 `python manage.py test tributario` ejecuta pruebas aisladas en SQLite en memoria; no crea ni modifica tablas en Supabase. `python manage.py check` valida configuración local. No ejecutes `seed_data` contra PostgreSQL; el comando está limitado a SQLite.
+
+## Despliegue en Vercel y Supabase
+
+El repositorio incluye `api/index.py` y `vercel.json` para ejecutar Django como función serverless. Supabase proporciona PostgreSQL y Storage; no expone directamente los endpoints Django.
+
+Configura estas variables en el proyecto Vercel del backend:
+
+- `DJANGO_DEBUG=false`
+- `DJANGO_SECRET_KEY=<clave aleatoria larga>`
+- `DJANGO_ALLOWED_HOSTS=<dominios separados por coma>`
+- `CORS_ALLOWED_ORIGINS=<URL exacta del frontend, sin barra final>`
+- `CSRF_TRUSTED_ORIGINS=<backend y frontend>`
+- `FRONTEND_URL=<URL del frontend>`
+- `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_SSLMODE=require`
+- `SUPABASE_URL`, `SUPABASE_SECRET_KEY` o `SUPABASE_SERVICE_ROLE_KEY`
+- Variables SMTP para que 2FA funcione fuera de desarrollo.
+
+Para Supabase usa el host y puerto del **Transaction Pooler** en `DB_HOST`/`DB_PORT` (normalmente puerto `6543`). Ejecuta las migraciones antes de probar el login:
+
+```bash
+python manage.py migrate
+python manage.py createsuperuser
+python manage.py bootstrap_admin --email usuario@example.com
+```
+
+Comprueba que el backend responde en `https://<backend>/api/v1/health/`. El frontend debe usar como URL base esa variable pública, por ejemplo `https://<backend>/api/v1`, nunca `http://localhost:8000`.

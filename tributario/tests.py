@@ -43,6 +43,11 @@ class SecurityAndAccessTests(TestCase):
         UserProfile.objects.create(user=user, role=role)
         return user
 
+    def test_health_endpoint_is_public(self):
+        response = self.client.get('/api/v1/health/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {'status': 'ok', 'service': 'nuam-backend'})
+
     def test_anonymous_access_is_denied(self):
         response = self.client.get('/api/v1/tax-records/')
         self.assertEqual(response.status_code, 401)

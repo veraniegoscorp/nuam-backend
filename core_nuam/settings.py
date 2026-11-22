@@ -25,7 +25,10 @@ load_dotenv(BASE_DIR / '.env')
 # See https://docs.djangoproject.com/en/6.1/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-DEBUG = os.getenv('DJANGO_DEBUG', 'true').lower() == 'true'
+DEBUG = os.getenv(
+    'DJANGO_DEBUG',
+    'false' if os.getenv('VERCEL') else 'true',
+).lower() == 'true'
 supabase_url = os.getenv('SUPABASE_URL', '').strip()
 supabase_secret_key = os.getenv('SUPABASE_SECRET_KEY', '').strip()
 supabase_service_role_key = os.getenv('SUPABASE_SERVICE_ROLE_KEY', '').strip()
@@ -50,6 +53,15 @@ ALLOWED_HOSTS = [
     ).split(',')
     if host.strip()
 ]
+for deployment_host in (
+    os.getenv('VERCEL_URL', ''),
+    os.getenv('VERCEL_PROJECT_PRODUCTION_URL', ''),
+):
+    deployment_host = deployment_host.strip()
+    if deployment_host and deployment_host not in ALLOWED_HOSTS:
+        ALLOWED_HOSTS.append(deployment_host)
+if os.getenv('VERCEL') and not ALLOWED_HOSTS:
+    ALLOWED_HOSTS = ['.vercel.app']
 
 
 # Application definition
@@ -108,11 +120,6 @@ WSGI_APPLICATION = 'core_nuam.wsgi.application'
 DATABASES = {
     'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': BASE_DIR / 'db.sqlite3'}
 }
-if not DEBUG and not (
-    supabase_storage_configured
-):
-    raise ValueError('Configura SUPABASE_URL y una clave privada para el almacenamiento privado.')
-
 if 'test' in sys.argv:
     DATABASES['default'] = {'ENGINE': 'django.db.backends.sqlite3', 'NAME': ':memory:'}
 else:
@@ -134,7 +141,7 @@ else:
             'PASSWORD': db_values['PASSWORD'],
             'HOST': db_values['HOST'],
             'PORT': db_values['PORT'],
-            'CONN_MAX_AGE': 60,
+            'CONN_MAX_AGE': 0 if os.getenv('VERCEL') else 60,
             'OPTIONS': {'sslmode': os.getenv('DB_SSLMODE', 'require')},
         }
         DATABASES['legacy'] = {
@@ -235,7 +242,19 @@ CORS_ALLOWED_ORIGINS = [
     ).split(',')
     if origin.strip()
 ]
+for frontend_url in (os.getenv('FRONTEND_URL', '').strip(),):
+    if frontend_url and frontend_url not in CORS_ALLOWED_ORIGINS:
+        CORS_ALLOWED_ORIGINS.append(frontend_url)
+CORS_ALLOWED_ORIGIN_REGEXES = [
+    r'^https://([a-zA-Z0-9-]+\.)+vercel\.app$',
+]
+CORS_ALLOW_ALL_ORIGINS = os.getenv('CORS_ALLOW_ALL_ORIGINS', 'false').lower() == 'true'
 CORS_ALLOW_CREDENTIALS = False
+CORS_TRUSTED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv('CSRF_TRUSTED_ORIGINS', '').split(',')
+    if origin.strip()
+]
 CORS_ALLOW_HEADERS = [
     'accept',
     'accept-encoding',
