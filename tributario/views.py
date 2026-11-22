@@ -1,26 +1,106 @@
 import hashlib
-from datetime import datetime
+import hmac
+import logging
+import secrets
+from datetime import timedelta
+from django.conf import settings
 from django.utils import timezone
+from django.db import transaction
 from django.db.models import Q
-from django.http import HttpResponse, JsonResponse
-from django.contrib.auth import authenticate
+from django.http import FileResponse
+from django.shortcuts import get_object_or_404
 from django.contrib.auth.models import User
+from django.contrib.auth.hashers import check_password, make_password
+from django.core.mail import send_mail
 from rest_framework import viewsets, status, permissions
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from .models import UserProfile, TaxRecord, TaxFactor, ApprovalRequest, AuditLog, BulkUploadJob
+from .models import UserProfile, TaxRecord, ApprovalRequest, AuditLog
 from .serializers import (
     UserSerializer,
+    AdminUserCreateSerializer,
     TaxRecordListSerializer,
     TaxRecordDetailSerializer,
     ApprovalRequestSerializer,
     ApprovalResolveSerializer,
     AuditLogSerializer,
-    BulkUploadJobSerializer
 )
+
+logger = logging.getLogger(__name__)
+
+
+def get_role(user):
+    if user.is_superuser:
+        return 'admin'
+    return UserProfile.objects.filter(user=user).values_list('role', flat=True).first()
+
+
+def log_action(request, action, result, tax_record=None):
+    user = request.user
+    display_name = user.get_full_name() or user.get_username()
+    role = get_role(user) or 'usuario'
+    AuditLog.objects.create(
+        tax_record=tax_record,
+        action=action,
+        user_name=f'{display_name} · {role}',
+        result=result,
+        ip_address=request.META.get('REMOTE_ADDR', '127.0.0.1'),
+    )
+
+
+def verify_document_hash(record):
+    if not record.document_file or not record.sha256_hash:
+        return False, ''
+    with record.document_file.open('rb') as document:
+        hasher = hashlib.sha256()
+        for chunk in iter(lambda: document.read(64 * 1024), b''):
+            hasher.update(chunk)
+    actual_hash = hasher.hexdigest()
+    verified = hmac.compare_digest(actual_hash, record.sha256_hash)
+    if record.is_hash_verified != verified:
+        record.is_hash_verified = verified
+        record.save(update_fields=['is_hash_verified', 'updated_at'])
+    return verified, actual_hash
+
+
+class HasRole(permissions.BasePermission):
+    allowed_roles = ()
+
+    def has_permission(self, request, view):
+        allowed_roles = getattr(view, 'allowed_roles', self.allowed_roles)
+        return request.user.is_authenticated and (
+            request.user.is_superuser or get_role(request.user) in allowed_roles
+        )
+
+
+class TaxRecordPermissions(permissions.BasePermission):
+    def has_permission(self, request, view):
+        if not request.user.is_authenticated:
+            return False
+        role = get_role(request.user)
+        if request.method in permissions.SAFE_METHODS:
+            return role in ('operador', 'supervisor', 'auditor', 'admin')
+        if request.method == 'DELETE':
+            return role in ('supervisor', 'admin')
+        return role in ('operador', 'supervisor', 'admin')
+
+
+class ApprovalPermissions(permissions.BasePermission):
+    def has_permission(self, request, view):
+        if not request.user.is_authenticated:
+            return False
+        role = get_role(request.user)
+        if getattr(view, 'action', '') == 'resolve':
+            return role in ('supervisor', 'admin')
+        return request.method in permissions.SAFE_METHODS and role in ('supervisor', 'admin')
+
+
+class BulkUploadPermissions(HasRole):
+    allowed_roles = ('operador', 'supervisor')
 
 
 class LoginView(APIView):
@@ -28,11 +108,17 @@ class LoginView(APIView):
     Endpoint de login con soporte para credenciales + 2FA y emisión de JWT.
     """
     permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'auth_login'
 
     def post(self, request):
-        email = request.data.get('email', '').strip()
-        password = request.data.get('password', '').strip()
-        two_factor_code = request.data.get('two_factor_code', '').strip()
+        email = request.data.get('email', '')
+        password = request.data.get('password', '')
+        two_factor_code = request.data.get('two_factor_code', '')
+        email = email.strip() if isinstance(email, str) else ''
+        two_factor_code = two_factor_code.strip() if isinstance(two_factor_code, str) else ''
+        if not isinstance(password, str):
+            password = ''
 
         if not email or not password:
             return Response(
@@ -42,32 +128,103 @@ class LoginView(APIView):
 
         # Buscar usuario por email o username
         user = User.objects.filter(Q(email__iexact=email) | Q(username__iexact=email)).first()
-        if not user or not user.check_password(password):
+        if not user or not user.is_active or not user.check_password(password):
+            AuditLog.objects.create(
+                action='Intento de inicio de sesión',
+                user_name='Intento de acceso',
+                result='Credenciales incorrectas',
+                ip_address=request.META.get('REMOTE_ADDR', '127.0.0.1'),
+            )
             return Response(
                 {'detail': 'Las credenciales ingresadas son incorrectas.'},
                 status=status.HTTP_401_UNAUTHORIZED
             )
 
-        # Obtener o crear perfil para 2FA
         profile, _ = UserProfile.objects.get_or_create(user=user)
 
-        # Si requiere 2FA y no se envió código
         if profile.is_2fa_enabled and not two_factor_code:
+            now = timezone.now()
+            cooldown_active = (
+                profile.two_factor_code_hash
+                and profile.two_factor_code_sent_at
+                and profile.two_factor_code_sent_at > now - timedelta(seconds=60)
+            )
+            if not cooldown_active:
+                code = f'{secrets.randbelow(1_000_000):06d}'
+                profile.two_factor_code_hash = make_password(code)
+                profile.two_factor_code_expires_at = now + timedelta(minutes=5)
+                profile.two_factor_code_sent_at = now
+                profile.two_factor_attempts = 0
+                profile.save(update_fields=[
+                    'two_factor_code_hash',
+                    'two_factor_code_expires_at',
+                    'two_factor_code_sent_at',
+                    'two_factor_attempts',
+                ])
+                try:
+                    send_mail(
+                        'Código de verificación NUAM',
+                        f'Tu código de acceso es {code}. Vence en 5 minutos y solo puede usarse una vez.',
+                        None,
+                        [user.email],
+                        fail_silently=False,
+                    )
+                except Exception:
+                    profile.two_factor_code_hash = ''
+                    profile.two_factor_code_expires_at = None
+                    profile.save(update_fields=['two_factor_code_hash', 'two_factor_code_expires_at'])
+                    logger.exception('No fue posible enviar el código de verificación 2FA.')
+                    return Response(
+                        {'detail': 'No fue posible enviar el código de verificación. Intenta nuevamente más tarde.'},
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    )
             return Response({
                 'requires_2fa': True,
                 'email': user.email,
-                'message': 'Código 2FA requerido para completar el acceso.'
-            }, status=status.HTTP_200_OK)
+                'delivery_mode': (
+                    'console'
+                    if settings.EMAIL_BACKEND == 'django.core.mail.backends.console.EmailBackend'
+                    else 'email'
+                ),
+                'message': (
+                    'En el entorno local, revisa la consola del backend para el código.'
+                    if settings.EMAIL_BACKEND == 'django.core.mail.backends.console.EmailBackend'
+                    else 'Enviamos un código de un solo uso a tu correo institucional.'
+                ),
+            })
 
-        # Validar código 2FA si se envió o si está habilitado
         if profile.is_2fa_enabled:
-            # Aceptamos el código del perfil o el default '123456'
-            valid_codes = [profile.two_factor_code, '123456']
-            if two_factor_code not in valid_codes:
+            code_is_current = (
+                profile.two_factor_code_hash
+                and profile.two_factor_code_expires_at
+                and profile.two_factor_code_expires_at > timezone.now()
+                and profile.two_factor_attempts < 5
+            )
+            if not code_is_current or not check_password(
+                two_factor_code,
+                profile.two_factor_code_hash,
+            ):
+                if code_is_current:
+                    profile.two_factor_attempts += 1
+                    profile.save(update_fields=['two_factor_attempts'])
+                AuditLog.objects.create(
+                    action='Intento de verificación 2FA',
+                    user_name=f'{user.get_full_name() or user.username} · {profile.get_role_display()}',
+                    result='Código inválido o expirado',
+                    ip_address=request.META.get('REMOTE_ADDR', '127.0.0.1'),
+                )
                 return Response(
                     {'detail': 'Código de segundo factor inválido o expirado.'},
                     status=status.HTTP_401_UNAUTHORIZED
                 )
+            profile.two_factor_code_hash = ''
+            profile.two_factor_code_expires_at = None
+            profile.two_factor_attempts = 0
+            profile.save(update_fields=[
+                'two_factor_code_hash',
+                'two_factor_code_expires_at',
+                'two_factor_attempts',
+            ])
 
         # Registrar evento de auditoría de inicio de sesión
         AuditLog.objects.create(
@@ -90,24 +247,84 @@ class CurrentUserView(APIView):
     """
     Retorna el perfil del usuario autenticado actual.
     """
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        if request.user and request.user.is_authenticated:
-            return Response(UserSerializer(request.user).data)
-        
-        # Fallback para pruebas si no viene token
-        user = User.objects.filter(username='camila.vargas').first() or User.objects.first()
-        if user:
-            return Response(UserSerializer(user).data)
-        return Response({'detail': 'No autenticado'}, status=status.HTTP_401_UNAUTHORIZED)
+        UserProfile.objects.get_or_create(
+            user=request.user,
+            defaults={'role': 'admin' if request.user.is_superuser else 'operador'},
+        )
+        return Response(UserSerializer(request.user).data)
+
+
+class AdminUsersView(APIView):
+    permission_classes = [HasRole]
+    allowed_roles = ('admin',)
+
+    def get(self, request):
+        users = User.objects.order_by('first_name', 'last_name', 'username')
+        for user in users:
+            UserProfile.objects.get_or_create(
+                user=user,
+                defaults={'role': 'admin' if user.is_superuser else 'operador'},
+            )
+        return Response(UserSerializer(users, many=True).data)
+
+    def post(self, request):
+        serializer = AdminUserCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        details = serializer.validated_data
+        username = details['email'].split('@', 1)[0].lower()
+        if User.objects.filter(username__iexact=username).exists():
+            return Response(
+                {'username': ['Ya existe una cuenta con el nombre derivado de este correo.']},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        temporary_password = secrets.token_urlsafe(18)
+        first_name, _, last_name = details['full_name'].strip().partition(' ')
+        user = User.objects.create_user(
+            username=username,
+            email=details['email'],
+            first_name=first_name,
+            last_name=last_name,
+            password=temporary_password,
+        )
+        UserProfile.objects.create(
+            user=user,
+            role=details['role'],
+            country=details['country'],
+            is_2fa_enabled=True,
+        )
+        log_action(request, f'Creación de usuario {user.email}', 'Usuario creado')
+        return Response({
+            'user': UserSerializer(user).data,
+            'temporary_password': temporary_password,
+        }, status=status.HTTP_201_CREATED)
 
 
 class TaxRecordViewSet(viewsets.ModelViewSet):
     """
     CRUD completo y búsqueda indexada de expedientes tributarios.
     """
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [TaxRecordPermissions]
+
+    def list(self, request, *args, **kwargs):
+        response = super().list(request, *args, **kwargs)
+        log_action(request, 'Consulta de expedientes tributarios', 'Listado consultado')
+        return response
+
+    def retrieve(self, request, *args, **kwargs):
+        response = super().retrieve(request, *args, **kwargs)
+        log_action(request, f'Consulta de expediente {response.data["folio"]}', 'Detalle consultado')
+        return response
+
+    def perform_create(self, serializer):
+        record = serializer.save()
+        log_action(self.request, f'Creación de expediente {record.folio}', 'Registro creado', record)
+
+    def perform_update(self, serializer):
+        record = serializer.save()
+        log_action(self.request, f'Modificación de expediente {record.folio}', 'Registro actualizado', record)
 
     def get_queryset(self):
         queryset = TaxRecord.objects.filter(is_deleted=False)
@@ -153,21 +370,14 @@ class TaxRecordViewSet(viewsets.ModelViewSet):
         return queryset
 
     def get_serializer_class(self):
-        if self.action in ['retrieve', 'update', 'partial_update']:
+        if self.action in ['retrieve', 'create', 'update', 'partial_update']:
             return TaxRecordDetailSerializer
         return TaxRecordListSerializer
 
     def perform_destroy(self, instance):
-        # Borrado lógico para mantener trazabilidad ante el SII
         instance.is_deleted = True
         instance.save()
-        AuditLog.objects.create(
-            tax_record=instance,
-            action=f"Borrado lógico de expediente {instance.folio}",
-            user_name="Usuario del sistema",
-            result="Registro desactivado",
-            ip_address=self.request.META.get('REMOTE_ADDR', '127.0.0.1')
-        )
+        log_action(self.request, f'Borrado lógico de expediente {instance.folio}', 'Registro desactivado', instance)
 
     @action(detail=True, methods=['get'])
     def verify_hash(self, request, pk=None):
@@ -175,11 +385,18 @@ class TaxRecordViewSet(viewsets.ModelViewSet):
         Verificación de integridad de documento con hash SHA-256.
         """
         record = self.get_object()
+        verified, _ = verify_document_hash(record)
+        log_action(
+            request,
+            f'Verificación de hash de expediente {record.folio}',
+            'Hash SHA-256 verificado' if verified else 'Documento no verificado',
+            record,
+        )
         return Response({
             'folio': record.folio,
             'sha256_hash': record.sha256_hash,
-            'is_hash_verified': record.is_hash_verified,
-            'status': 'Documento Inmutable y Verificado'
+            'is_hash_verified': verified,
+            'status': 'Documento verificado' if verified else 'Documento no disponible o no verificado',
         })
 
     @action(detail=True, methods=['get'])
@@ -188,20 +405,28 @@ class TaxRecordViewSet(viewsets.ModelViewSet):
         Descarga segura de documento con validación de integridad SHA-256 en header.
         """
         record = self.get_object()
-        
-        # Registrar auditoría de descarga
-        AuditLog.objects.create(
-            tax_record=record,
-            action=f"Descarga de expediente {record.folio}",
-            user_name="Usuario autorizado",
-            result="Hash verificado: descarga autorizada",
-            ip_address=request.META.get('REMOTE_ADDR', '127.0.0.1')
-        )
+        if not record.document_file:
+            log_action(request, f'Intento de descarga de expediente {record.folio}', 'Archivo original no disponible', record)
+            return Response(
+                {'detail': 'No existe un documento original almacenado para este expediente.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
 
-        content = f"%PDF-1.4\n% Nuam Expediente Tributario: {record.folio}\n% Emisor: {record.company_name}\n% RUT: {record.rut}\n% Monto: {record.currency} {record.amount}\n%%EOF".encode('utf-8')
-        response = HttpResponse(content, content_type='application/pdf')
-        response['Content-Disposition'] = f'attachment; filename="{record.folio}.pdf"'
-        response['X-Integrity-SHA256'] = record.sha256_hash
+        verified, verified_hash = verify_document_hash(record)
+        if not verified:
+            log_action(request, f'Fallo de integridad del expediente {record.folio}', 'Descarga bloqueada por hash distinto', record)
+            return Response(
+                {'detail': 'La integridad del documento no pudo verificarse. Descarga bloqueada.'},
+                status=status.HTTP_409_CONFLICT,
+            )
+        log_action(request, f'Descarga de expediente {record.folio}', 'Hash SHA-256 verificado', record)
+        response = FileResponse(
+            record.document_file.open('rb'),
+            as_attachment=True,
+            filename=record.document_name or f'{record.folio}.pdf',
+            content_type='application/pdf',
+        )
+        response['X-Integrity-SHA256'] = verified_hash
         return response
 
     @action(detail=False, methods=['get'])
@@ -212,12 +437,22 @@ class TaxRecordViewSet(viewsets.ModelViewSet):
         total = TaxRecord.objects.filter(is_deleted=False).count()
         pending = TaxRecord.objects.filter(is_deleted=False, status__icontains='Pendiente').count()
         recent = TaxRecord.objects.filter(is_deleted=False)[:5]
+        verified = TaxRecord.objects.filter(
+            is_deleted=False,
+            document_file__gt='',
+            is_hash_verified=True,
+        ).count()
+        first_of_month = timezone.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        downloads = AuditLog.objects.filter(
+            action__startswith='Descarga de expediente',
+            timestamp__gte=first_of_month,
+        ).count()
 
         return Response({
             'total_records': total,
             'pending_review': pending,
-            'integrity_percentage': '99,8%',
-            'monthly_downloads': 247,
+            'integrity_percentage': f'{(verified / total * 100):.1f}%' if total else '0.0%',
+            'monthly_downloads': downloads,
             'recent_records': TaxRecordListSerializer(recent, many=True).data
         })
 
@@ -228,7 +463,7 @@ class ApprovalRequestViewSet(viewsets.ModelViewSet):
     """
     queryset = ApprovalRequest.objects.all()
     serializer_class = ApprovalRequestSerializer
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [ApprovalPermissions]
 
     def get_queryset(self):
         qs = ApprovalRequest.objects.all()
@@ -245,52 +480,47 @@ class ApprovalRequestViewSet(viewsets.ModelViewSet):
         """
         Aprobación o Rechazo con comentario obligatorio por parte del Supervisor.
         """
-        approval = self.get_object()
         serializer = ApprovalResolveSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
         action_type = serializer.validated_data['action']
         comment = serializer.validated_data['comment']
 
-        user_name = "María Rojas · Supervisor"
-        if request.user and request.user.is_authenticated:
-            user_name = f"{request.user.get_full_name() or request.user.username} · Supervisor"
-
-        if action_type == 'approve':
-            approval.status = 'Aprobada'
+        user_name = f"{request.user.get_full_name() or request.user.username} · {get_role(request.user)}"
+        with transaction.atomic():
+            approval = get_object_or_404(
+                self.filter_queryset(self.get_queryset()).select_for_update(),
+                pk=pk,
+            )
+            if approval.status != 'Pendiente':
+                return Response(
+                    {'detail': 'La solicitud ya fue resuelta.'},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            if action_type == 'approve':
+                approval.status = 'Aprobada'
+                approval.tax_record.status = 'Validado'
+                message = 'Solicitud aprobada y enviada a respaldo.'
+                result = 'Aprobado'
+                action_label = 'Aprobación'
+            else:
+                approval.status = 'Rechazada'
+                approval.tax_record.status = 'Observado'
+                message = 'Solicitud rechazada.'
+                result = 'Rechazado'
+                action_label = 'Rechazo'
             approval.decision_comment = comment
             approval.decided_at = timezone.now()
+            approval.decided_by = request.user
             approval.save()
-
-            # Actualizar el registro tributario a Validado
-            approval.tax_record.status = 'Validado'
             approval.tax_record.save()
-
             AuditLog.objects.create(
                 tax_record=approval.tax_record,
-                action=f"Aprobación de entrega de respaldo {approval.code} al SII",
+                action=f'{action_label} de solicitud {approval.code}',
                 user_name=user_name,
-                result="Aprobado",
-                ip_address=request.META.get('REMOTE_ADDR', '127.0.0.1')
+                result=result,
+                ip_address=request.META.get('REMOTE_ADDR', '127.0.0.1'),
             )
-            message = "Solicitud aprobada y enviada a respaldo."
-        else:
-            approval.status = 'Rechazada'
-            approval.decision_comment = comment
-            approval.decided_at = timezone.now()
-            approval.save()
-
-            approval.tax_record.status = 'Observado'
-            approval.tax_record.save()
-
-            AuditLog.objects.create(
-                tax_record=approval.tax_record,
-                action=f"Rechazo de solicitud {approval.code}",
-                user_name=user_name,
-                result="Rechazado",
-                ip_address=request.META.get('REMOTE_ADDR', '127.0.0.1')
-            )
-            message = "Solicitud rechazada."
 
         return Response({
             'detail': message,
@@ -302,61 +532,13 @@ class BulkUploadView(APIView):
     """
     Carga masiva de documentos con semáforo de calidad y reporte de validación previa.
     """
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [BulkUploadPermissions]
 
     def post(self, request, action_type='validate'):
-        uploaded_file = request.FILES.get('file')
-        filename = uploaded_file.name if uploaded_file else request.data.get('filename', 'certificados_chile_2025.xlsx')
-
-        if action_type == 'validate':
-            # Simulación precisa del semáforo del diseño Figma
-            response_data = {
-                'filename': filename,
-                'total_rows': 150,
-                'valid_rows': 148,
-                'warning_rows': 0,
-                'error_rows': 2,
-                'can_confirm': False, # Bloqueado porque hay 2 errores
-                'message': 'Hay 2 errores que impiden confirmar la carga. Corrige el archivo y vuelve a validarlo.',
-                'errors': [
-                    {
-                        'row': 47,
-                        'field': 'RUT',
-                        'value': '76.284.931-0',
-                        'error': 'Dígito verificador inválido.',
-                        'status': 'Con error'
-                    },
-                    {
-                        'row': 112,
-                        'field': 'Monto',
-                        'value': 'Sin dato',
-                        'error': 'Campo obligatorio: debe indicar un monto numérico.',
-                        'status': 'Con error'
-                    }
-                ]
-            }
-            return Response(response_data, status=status.HTTP_200_OK)
-
-        elif action_type == 'confirm':
-            # Confirmar carga masiva
-            job = BulkUploadJob.objects.create(
-                filename=filename,
-                total_rows=150,
-                valid_rows=150,
-                warning_rows=0,
-                error_rows=0,
-                status='Confirmado'
-            )
-            AuditLog.objects.create(
-                action=f"Carga masiva procesada ({filename})",
-                user_name="Camila Vargas · Operador",
-                result="150 registros incorporados",
-                ip_address=request.META.get('REMOTE_ADDR', '127.0.0.1')
-            )
-            return Response({
-                'detail': 'Carga masiva procesada exitosamente.',
-                'job': BulkUploadJobSerializer(job).data
-            }, status=status.HTTP_201_CREATED)
+        return Response(
+            {'detail': 'La carga masiva validada está fuera del MVP y aún no está habilitada.'},
+            status=status.HTTP_501_NOT_IMPLEMENTED,
+        )
 
 
 class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
@@ -365,7 +547,8 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
     """
     queryset = AuditLog.objects.all()
     serializer_class = AuditLogSerializer
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [HasRole]
+    allowed_roles = ('auditor', 'supervisor', 'admin')
 
     def get_queryset(self):
         qs = AuditLog.objects.all()

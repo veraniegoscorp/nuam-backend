@@ -1,4 +1,7 @@
 from django.core.management.base import BaseCommand
+from django.core.management.base import CommandError
+from django.conf import settings
+from django.db import connections
 from django.contrib.auth.models import User
 from tributario.models import UserProfile, TaxRecord, TaxFactor, ApprovalRequest, AuditLog
 
@@ -7,6 +10,8 @@ class Command(BaseCommand):
     help = 'Carga datos iniciales (usuarios, expedientes, aprobaciones y auditoría)'
 
     def handle(self, *args, **options):
+        if not settings.DEBUG or connections['default'].vendor != 'sqlite':
+            raise CommandError('seed_data solo puede ejecutarse en entorno local de desarrollo.')
         self.stdout.write('Iniciando carga de datos de prueba...')
 
         # 1. Crear usuarios
@@ -18,7 +23,6 @@ class Command(BaseCommand):
                 'last_name': 'Vargas',
                 'role': 'operador',
                 'country': 'Chile',
-                'code': '123456'
             },
             {
                 'username': 'maria.rojas',
@@ -27,7 +31,6 @@ class Command(BaseCommand):
                 'last_name': 'Rojas',
                 'role': 'supervisor',
                 'country': 'Chile',
-                'code': '123456'
             },
             {
                 'username': 'rodrigo.carrasco',
@@ -36,7 +39,6 @@ class Command(BaseCommand):
                 'last_name': 'Carrasco',
                 'role': 'operador',
                 'country': 'Chile',
-                'code': '123456'
             }
         ]
 
@@ -49,7 +51,7 @@ class Command(BaseCommand):
                     'last_name': udata['last_name']
                 }
             )
-            user.set_password('Admin1234*')
+            user.set_unusable_password()
             user.email = udata['email']
             user.first_name = udata['first_name']
             user.last_name = udata['last_name']
@@ -58,11 +60,10 @@ class Command(BaseCommand):
             profile, _ = UserProfile.objects.get_or_create(user=user)
             profile.role = udata['role']
             profile.country = udata['country']
-            profile.two_factor_code = udata['code']
             profile.is_2fa_enabled = True
             profile.save()
 
-        self.stdout.write(self.style.SUCCESS('Usuarios creados: camila.vargas, maria.rojas, rodrigo.carrasco (pass: Admin1234*, 2FA: 123456)'))
+        self.stdout.write(self.style.SUCCESS('Usuarios de demostración creados; configura el envío de correo para iniciar sesión.'))
 
         # 2. Crear registros tributarios
         records_data = [
@@ -78,8 +79,8 @@ class Command(BaseCommand):
                 'currency': 'CLP',
                 'origin': 'Bolsa de Santiago',
                 'document_name': 'CERT-2025-0148.pdf',
-                'sha256_hash': '6f2c9a048e3b17d5c0a8f69e12b4d730a5e1938c7d60f241b9e8a0524c6d3f17',
-                'is_hash_verified': True,
+                'sha256_hash': '',
+                'is_hash_verified': False,
                 'version': '1 · Original',
                 'factors': [
                     ('Factor de actualización', '1,045'),
@@ -104,8 +105,8 @@ class Command(BaseCommand):
                 'currency': 'CLP',
                 'origin': 'Bolsa de Santiago',
                 'document_name': 'CERT-2025-0149.pdf',
-                'sha256_hash': 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
-                'is_hash_verified': True,
+                'sha256_hash': '',
+                'is_hash_verified': False,
                 'version': '1 · Original',
                 'factors': [
                     ('Factor de actualización', '1,032'),
@@ -128,8 +129,8 @@ class Command(BaseCommand):
                 'currency': 'CLP',
                 'origin': 'Bolsa de Santiago',
                 'document_name': 'CERT-2025-0150.pdf',
-                'sha256_hash': '7d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e',
-                'is_hash_verified': True,
+                'sha256_hash': '',
+                'is_hash_verified': False,
                 'version': '1 · Original',
                 'factors': [
                     ('Factor de actualización', '1,050'),
@@ -151,8 +152,8 @@ class Command(BaseCommand):
                 'currency': 'CLP',
                 'origin': 'Bolsa de Santiago',
                 'document_name': 'CERT-2024-0089.pdf',
-                'sha256_hash': '4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b',
-                'is_hash_verified': True,
+                'sha256_hash': '',
+                'is_hash_verified': False,
                 'version': '1 · Original',
                 'factors': [
                     ('Factor de actualización', '1,021'),

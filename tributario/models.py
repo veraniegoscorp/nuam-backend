@@ -7,6 +7,7 @@ class UserProfile(models.Model):
     ROLE_CHOICES = (
         ('operador', 'Operador'),
         ('supervisor', 'Supervisor'),
+        ('auditor', 'Auditor'),
         ('admin', 'Administrador'),
     )
     COUNTRY_CHOICES = (
@@ -18,7 +19,10 @@ class UserProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='operador')
     country = models.CharField(max_length=20, choices=COUNTRY_CHOICES, default='Chile')
-    two_factor_code = models.CharField(max_length=6, default='123456')
+    two_factor_code_hash = models.CharField(max_length=128, blank=True, default='')
+    two_factor_code_expires_at = models.DateTimeField(null=True, blank=True)
+    two_factor_code_sent_at = models.DateTimeField(null=True, blank=True)
+    two_factor_attempts = models.PositiveSmallIntegerField(default=0)
     is_2fa_enabled = models.BooleanField(default=True)
 
     def __str__(self):
@@ -51,7 +55,7 @@ class TaxRecord(models.Model):
     document_name = models.CharField(max_length=255, default='documento.pdf')
     document_file = models.FileField(upload_to='documents/', null=True, blank=True)
     sha256_hash = models.CharField(max_length=64, blank=True, default='')
-    is_hash_verified = models.BooleanField(default=True)
+    is_hash_verified = models.BooleanField(default=False)
     version = models.CharField(max_length=50, default='1 · Original')
     notes = models.TextField(blank=True, default='')
     is_deleted = models.BooleanField(default=False)
@@ -66,18 +70,11 @@ class TaxRecord(models.Model):
 
     def save(self, *args, **kwargs):
         if self.document_file and not self.sha256_hash:
-            try:
-                hasher = hashlib.sha256()
-                for chunk in self.document_file.chunks():
-                    hasher.update(chunk)
-                self.sha256_hash = hasher.hexdigest()
-                self.is_hash_verified = True
-            except Exception:
-                pass
-        elif not self.sha256_hash:
-            # Generate deterministic sample SHA-256 for demo documents
-            raw = f"{self.folio}:{self.rut}:{self.company_name}:{self.year}"
-            self.sha256_hash = hashlib.sha256(raw.encode()).hexdigest()
+            hasher = hashlib.sha256()
+            for chunk in self.document_file.chunks():
+                hasher.update(chunk)
+            self.sha256_hash = hasher.hexdigest()
+            self.is_hash_verified = True
         super().save(*args, **kwargs)
 
 

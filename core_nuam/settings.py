@@ -11,21 +11,45 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 """
 
 from pathlib import Path
+import os
+import sys
+
+from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / '.env')
 
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.1/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-@tdus3q+z7t$10&f*9v26v))8hd3w61n171&9!@4!)l1c(!g^e'
+DEBUG = os.getenv('DJANGO_DEBUG', 'true').lower() == 'true'
+supabase_url = os.getenv('SUPABASE_URL', '').strip()
+supabase_secret_key = os.getenv('SUPABASE_SECRET_KEY', '').strip()
+supabase_service_role_key = os.getenv('SUPABASE_SERVICE_ROLE_KEY', '').strip()
+if supabase_secret_key and supabase_service_role_key:
+    raise ValueError('Configura SUPABASE_SECRET_KEY o SUPABASE_SERVICE_ROLE_KEY, no ambas.')
+supabase_storage_key = supabase_secret_key or supabase_service_role_key
+supabase_storage_configured = bool(supabase_url and supabase_storage_key)
+if bool(supabase_url) != bool(supabase_storage_key):
+    raise ValueError('Configura SUPABASE_URL y una clave privada de Supabase Storage.')
+SECRET_KEY = os.getenv(
+    'DJANGO_SECRET_KEY',
+    'local-development-key-not-for-production-32-bytes' if DEBUG else '',
+)
+if not SECRET_KEY:
+    raise ValueError('DJANGO_SECRET_KEY debe configurarse fuera del entorno local.')
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
-
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = [
+    host.strip()
+    for host in os.getenv(
+        'DJANGO_ALLOWED_HOSTS',
+        'localhost,127.0.0.1' if DEBUG else '',
+    ).split(',')
+    if host.strip()
+]
 
 
 # Application definition
@@ -41,13 +65,15 @@ INSTALLED_APPS = [
     'corsheaders',
     'rest_framework',
     'rest_framework_simplejwt',
+    'rest_framework_simplejwt.token_blacklist',
     # Local apps
     'tributario',
 ]
 
 MIDDLEWARE = [
-    'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -80,12 +106,43 @@ WSGI_APPLICATION = 'core_nuam.wsgi.application'
 # https://docs.djangoproject.com/en/6.1/ref/settings/#databases
 
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-    }
+    'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': BASE_DIR / 'db.sqlite3'}
 }
+if not DEBUG and not (
+    supabase_storage_configured
+):
+    raise ValueError('Configura SUPABASE_URL y una clave privada para el almacenamiento privado.')
 
+if 'test' in sys.argv:
+    DATABASES['default'] = {'ENGINE': 'django.db.backends.sqlite3', 'NAME': ':memory:'}
+else:
+    db_values = {
+        'HOST': os.getenv('DB_HOST') or os.getenv('host'),
+        'PORT': os.getenv('DB_PORT') or os.getenv('port'),
+        'NAME': os.getenv('DB_NAME') or os.getenv('database'),
+        'USER': os.getenv('DB_USER') or os.getenv('user'),
+        'PASSWORD': os.getenv('DB_PASSWORD') or os.getenv('password'),
+    }
+    configured_db_values = [value for value in db_values.values() if value]
+    if configured_db_values and len(configured_db_values) != len(db_values):
+        raise ValueError('Configura todas las variables de conexión DB_* para usar PostgreSQL.')
+    if configured_db_values:
+        DATABASES['default'] = {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': db_values['NAME'],
+            'USER': db_values['USER'],
+            'PASSWORD': db_values['PASSWORD'],
+            'HOST': db_values['HOST'],
+            'PORT': db_values['PORT'],
+            'CONN_MAX_AGE': 60,
+            'OPTIONS': {'sslmode': os.getenv('DB_SSLMODE', 'require')},
+        }
+        DATABASES['legacy'] = {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
+    elif not DEBUG:
+        raise ValueError('Configura DB_* para usar PostgreSQL fuera del entorno local.')
 
 # Password validation
 # https://docs.djangoproject.com/en/6.1/ref/settings/#auth-password-validators
@@ -122,24 +179,63 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.1/howto/static-files/
 
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+SUPABASE_URL = supabase_url
+SUPABASE_STORAGE_KEY = supabase_storage_key
+SUPABASE_STORAGE_USE_BEARER = bool(supabase_service_role_key)
+SUPABASE_STORAGE_BUCKET = os.getenv('SUPABASE_STORAGE_BUCKET', 'tax-documents')
+STORAGES = {
+    'default': {
+        'BACKEND': (
+            'tributario.storage.SupabaseStorage'
+            if supabase_storage_configured
+            else 'django.core.files.storage.FileSystemStorage'
+        ),
+    },
+    'staticfiles': {
+        'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
+    },
+}
 
 
 # Email
 # https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration
 
-MAILERS = {
-    'default': {
-        'BACKEND': 'django.core.mail.backends.console.EmailBackend',
-    },
-}
+EMAIL_BACKEND = os.getenv(
+    'EMAIL_BACKEND',
+    'django.core.mail.backends.smtp.EmailBackend'
+    if os.getenv('EMAIL_HOST')
+    else 'django.core.mail.backends.console.EmailBackend' if DEBUG
+    else 'django.core.mail.backends.smtp.EmailBackend',
+)
+EMAIL_HOST = os.getenv('EMAIL_HOST', '')
+EMAIL_PORT = int(os.getenv('EMAIL_PORT', '587'))
+EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
+EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'true').lower() == 'true'
+EMAIL_USE_SSL = os.getenv('EMAIL_USE_SSL', 'false').lower() == 'true'
+DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'NUAM <no-reply@localhost>')
+if EMAIL_USE_TLS and EMAIL_USE_SSL:
+    raise ValueError('EMAIL_USE_TLS y EMAIL_USE_SSL no pueden estar habilitados a la vez.')
+if not DEBUG and (
+    not EMAIL_HOST or EMAIL_BACKEND != 'django.core.mail.backends.smtp.EmailBackend'
+):
+    raise ValueError('Configura un backend SMTP para entregar códigos 2FA fuera del entorno local.')
 
 # Media files
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
 # CORS configuration
-CORS_ALLOW_ALL_ORIGINS = True
-CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        'CORS_ALLOWED_ORIGINS',
+        'http://localhost:5173,http://127.0.0.1:5173' if DEBUG else '',
+    ).split(',')
+    if origin.strip()
+]
+CORS_ALLOW_CREDENTIALS = False
 CORS_ALLOW_HEADERS = [
     'accept',
     'accept-encoding',
@@ -160,17 +256,25 @@ REST_FRAMEWORK = {
         'rest_framework.authentication.SessionAuthentication',
     ),
     'DEFAULT_PERMISSION_CLASSES': (
-        'rest_framework.permissions.AllowAny',
+        'rest_framework.permissions.IsAuthenticated',
     ),
+    'DEFAULT_THROTTLE_RATES': {
+        'auth_login': '10/minute',
+    },
 }
 
 # SimpleJWT configuration
 from datetime import timedelta
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(days=7),
-    'REFRESH_TOKEN_LIFETIME': timedelta(days=30),
-    'ROTATE_REFRESH_TOKENS': False,
-    'BLACKLIST_AFTER_ROTATION': False,
+    'ACCESS_TOKEN_LIFETIME': timedelta(hours=1),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': True,
     'AUTH_HEADER_TYPES': ('Bearer',),
 }
+
+if not DEBUG:
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
 

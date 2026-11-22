@@ -4,6 +4,7 @@ from rest_framework_simplejwt.views import TokenRefreshView
 from .views import (
     LoginView,
     CurrentUserView,
+    AdminUsersView,
     TaxRecordViewSet,
     ApprovalRequestViewSet,
     BulkUploadView,
@@ -20,6 +21,7 @@ urlpatterns = [
     path('auth/login/', LoginView.as_view(), name='api-login'),
     path('auth/token/refresh/', TokenRefreshView.as_view(), name='token-refresh'),
     path('auth/me/', CurrentUserView.as_view(), name='api-me'),
+    path('admin/users/', AdminUsersView.as_view(), name='admin-users'),
 
     # Carga masiva
     path('bulk-upload/validate/', BulkUploadView.as_view(), {'action_type': 'validate'}, name='bulk-validate'),
