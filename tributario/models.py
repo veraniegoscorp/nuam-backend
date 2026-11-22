@@ -7,13 +7,10 @@ class UserProfile(models.Model):
     ROLE_CHOICES = (
         ('operador', 'Operador'),
         ('supervisor', 'Supervisor'),
-        ('auditor', 'Auditor'),
         ('admin', 'Administrador'),
     )
     COUNTRY_CHOICES = (
         ('Chile', 'Chile'),
-        ('Colombia', 'Colombia'),
-        ('Peru', 'Perú'),
     )
 
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='profile')
@@ -38,8 +35,6 @@ class TaxRecord(models.Model):
     )
     COUNTRY_CHOICES = (
         ('Chile', 'Chile'),
-        ('Colombia', 'Colombia'),
-        ('Peru', 'Perú'),
     )
 
     folio = models.CharField(max_length=50, unique=True, db_index=True)
@@ -142,6 +137,7 @@ class BulkUploadJob(models.Model):
     error_rows = models.IntegerField(default=0)
     status = models.CharField(max_length=50, default='Validado')
     errors_json = models.JSONField(default=list)
+    valid_payload = models.JSONField(default=list)
     uploaded_by = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL)
     created_at = models.DateTimeField(auto_now_add=True)
 

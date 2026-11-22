@@ -16,7 +16,7 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'profile']
+        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'is_active', 'profile']
 
 
 class UserNameUpdateSerializer(serializers.ModelSerializer):
@@ -32,7 +32,7 @@ class AdminUserCreateSerializer(serializers.Serializer):
     email = serializers.EmailField()
     full_name = serializers.CharField(max_length=150)
     role = serializers.ChoiceField(choices=UserProfile.ROLE_CHOICES)
-    country = serializers.ChoiceField(choices=UserProfile.COUNTRY_CHOICES)
+    country = serializers.ChoiceField(choices=UserProfile.COUNTRY_CHOICES, required=False, default='Chile')
 
     def validate_email(self, value):
         if User.objects.filter(email__iexact=value).exists():

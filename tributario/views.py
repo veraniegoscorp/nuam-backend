@@ -2,6 +2,9 @@ import hashlib
 import hmac
 import logging
 import secrets
+import csv
+import io
+from decimal import Decimal, InvalidOperation
 from datetime import timedelta
 from django.conf import settings
 from django.utils import timezone
@@ -19,7 +22,7 @@ from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from .models import UserProfile, TaxRecord, ApprovalRequest, AuditLog
+from .models import UserProfile, TaxRecord, ApprovalRequest, AuditLog, BulkUploadJob
 from .serializers import (
     UserSerializer,
     UserNameUpdateSerializer,
@@ -30,6 +33,7 @@ from .serializers import (
     ApprovalResolveSerializer,
     AuditLogSerializer,
 )
+from openpyxl import load_workbook
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +88,7 @@ class TaxRecordPermissions(permissions.BasePermission):
             return False
         role = get_role(request.user)
         if request.method in permissions.SAFE_METHODS:
-            return role in ('operador', 'supervisor', 'auditor', 'admin')
+            return role in ('operador', 'supervisor', 'admin')
         if request.method == 'DELETE':
             return role in ('supervisor', 'admin')
         return role in ('operador', 'supervisor', 'admin')
@@ -101,7 +105,7 @@ class ApprovalPermissions(permissions.BasePermission):
 
 
 class BulkUploadPermissions(HasRole):
-    allowed_roles = ('operador', 'supervisor')
+    allowed_roles = ('operador', 'supervisor', 'admin')
 
 
 class LoginView(APIView):
@@ -309,6 +313,50 @@ class AdminUsersView(APIView):
         }, status=status.HTTP_201_CREATED)
 
 
+class AdminUserDetailView(APIView):
+    permission_classes = [HasRole]
+    allowed_roles = ('admin',)
+
+    def patch(self, request, pk):
+        user = get_object_or_404(User, pk=pk)
+        profile, _ = UserProfile.objects.get_or_create(
+            user=user,
+            defaults={'role': 'admin' if user.is_superuser else 'operador', 'country': 'Chile'},
+        )
+
+        role = request.data.get('role')
+        is_active = request.data.get('is_active')
+        two_factor_enabled = request.data.get('two_factor_enabled')
+        changes = []
+
+        if role is not None:
+            if role not in ('admin', 'operador', 'supervisor'):
+                return Response({'role': ['Rol inválido.']}, status=status.HTTP_400_BAD_REQUEST)
+            if profile.role != role:
+                profile.role = role
+                changes.append(f'rol={role}')
+
+        if is_active is not None:
+            if not isinstance(is_active, bool):
+                return Response({'is_active': ['Debe ser un valor booleano.']}, status=status.HTTP_400_BAD_REQUEST)
+            if user.is_active != is_active:
+                user.is_active = is_active
+                user.save(update_fields=['is_active'])
+                changes.append(f'is_active={is_active}')
+
+        if two_factor_enabled is not None:
+            if not isinstance(two_factor_enabled, bool):
+                return Response({'two_factor_enabled': ['Debe ser un valor booleano.']}, status=status.HTTP_400_BAD_REQUEST)
+            if profile.is_2fa_enabled != two_factor_enabled:
+                profile.is_2fa_enabled = two_factor_enabled
+                changes.append(f'two_factor_enabled={two_factor_enabled}')
+
+        profile.save()
+        if changes:
+            log_action(request, f'Modificación de usuario {user.email}', ', '.join(changes))
+        return Response(UserSerializer(user).data)
+
+
 class TaxRecordViewSet(viewsets.ModelViewSet):
     """
     CRUD completo y búsqueda indexada de expedientes tributarios.
@@ -454,10 +502,12 @@ class TaxRecordViewSet(viewsets.ModelViewSet):
             action__startswith='Descarga de expediente',
             timestamp__gte=first_of_month,
         ).count()
+        pending_approvals = ApprovalRequest.objects.filter(status='Pendiente').count()
 
         return Response({
             'total_records': total,
             'pending_review': pending,
+            'pending_approvals': pending_approvals,
             'integrity_percentage': f'{(verified / total * 100):.1f}%' if total else '0.0%',
             'monthly_downloads': downloads,
             'recent_records': TaxRecordListSerializer(recent, many=True).data
@@ -542,10 +592,161 @@ class BulkUploadView(APIView):
     permission_classes = [BulkUploadPermissions]
 
     def post(self, request, action_type='validate'):
-        return Response(
-            {'detail': 'La carga masiva validada está fuera del MVP y aún no está habilitada.'},
-            status=status.HTTP_501_NOT_IMPLEMENTED,
+        if action_type == 'confirm':
+            job_id = request.data.get('job_id') or request.data.get('batch_id')
+            if not job_id:
+                return Response({'detail': 'Debe indicar el job_id del lote.'}, status=status.HTTP_400_BAD_REQUEST)
+            try:
+                job = BulkUploadJob.objects.select_for_update().get(pk=job_id)
+            except (BulkUploadJob.DoesNotExist, ValueError):
+                return Response({'detail': 'Lote no encontrado.'}, status=status.HTTP_404_NOT_FOUND)
+            if job.status == 'Confirmado':
+                return Response({'detail': 'El lote ya fue confirmado.'}, status=status.HTTP_409_CONFLICT)
+
+            created = 0
+            with transaction.atomic():
+                job = BulkUploadJob.objects.select_for_update().get(pk=job_id)
+                for row in job.valid_payload:
+                    if TaxRecord.objects.filter(folio=row['folio'], is_deleted=False).exists():
+                        continue
+                    TaxRecord.objects.create(
+                        folio=row['folio'],
+                        rut=row['rut'],
+                        company_name=row['company_name'],
+                        year=row['year'],
+                        doc_type=row['doc_type'],
+                        amount=Decimal(str(row['amount'])),
+                        origin=row['origin'],
+                        country='Chile',
+                        status='Pendiente de aprobación',
+                    )
+                    created += 1
+                job.valid_rows = created
+                job.status = 'Confirmado'
+                job.save(update_fields=['valid_rows', 'status'])
+            log_action(
+                request,
+                f'Confirmación de carga masiva {job.filename}',
+                f'{created} registros creados',
+            )
+            return Response({
+                'batch_id': job.pk,
+                'filename': job.filename,
+                'created': created,
+                'valid_rows': job.valid_rows,
+                'status': job.status,
+            })
+
+        uploaded = request.FILES.get('file')
+        if not uploaded:
+            return Response({'detail': 'Debe adjuntar un archivo .csv o .xlsx.'}, status=status.HTTP_400_BAD_REQUEST)
+        filename = uploaded.name
+        extension = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+        if extension not in ('csv', 'xlsx'):
+            return Response({'detail': 'Formato no permitido. Use .csv o .xlsx.'}, status=status.HTTP_400_BAD_REQUEST)
+        if uploaded.size > 25 * 1024 * 1024:
+            return Response({'detail': 'El archivo no puede superar 25 MB.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        required = ['folio', 'rut', 'company_name', 'year', 'doc_type', 'amount', 'origin']
+        try:
+            if extension == 'csv':
+                text = uploaded.read().decode('utf-8-sig')
+                sample = text[:4096]
+                dialect = csv.Sniffer().sniff(sample, delimiters=',;')
+                reader = csv.DictReader(io.StringIO(text), dialect=dialect)
+                rows = list(reader)
+                headers = [str(h).strip().lower() for h in (reader.fieldnames or [])]
+            else:
+                workbook = load_workbook(uploaded, read_only=True, data_only=True)
+                sheet = workbook.active
+                values = list(sheet.iter_rows(values_only=True))
+                if not values:
+                    rows, headers = [], []
+                else:
+                    headers = [str(v).strip().lower() if v is not None else '' for v in values[0]]
+                    rows = [dict(zip(headers, row)) for row in values[1:] if any(v is not None for v in row)]
+        except Exception:
+            return Response({'detail': 'No fue posible leer el archivo.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        missing_headers = [column for column in required if column not in headers]
+        if missing_headers:
+            return Response({
+                'detail': 'Faltan columnas requeridas.',
+                'missing_columns': missing_headers,
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        errors = []
+        valid_payload = []
+        seen_folios = set()
+        for index, row in enumerate(rows, start=2):
+            folio = str(row.get('folio') or '').strip()
+            rut = str(row.get('rut') or '').strip()
+            company_name = str(row.get('company_name') or '').strip()
+            doc_type = str(row.get('doc_type') or '').strip()
+            origin = str(row.get('origin') or '').strip()
+            row_errors = []
+
+            if not all([folio, rut, company_name, doc_type, origin]):
+                row_errors.append('Campos obligatorios vacíos')
+            try:
+                year = int(str(row.get('year')).strip())
+                if year < 1900 or year > 2100:
+                    raise ValueError
+            except (TypeError, ValueError):
+                row_errors.append('year debe ser un entero válido')
+                year = None
+            try:
+                amount_text = str(row.get('amount') or '').strip()
+                if ',' in amount_text:
+                    amount_text = amount_text.replace('.', '').replace(',', '.')
+                amount = Decimal(amount_text)
+                if amount < 0:
+                    raise InvalidOperation
+            except (InvalidOperation, TypeError, ValueError):
+                row_errors.append('amount debe ser un monto válido')
+                amount = None
+
+            if folio:
+                if folio in seen_folios:
+                    row_errors.append('folio repetido dentro del archivo')
+                seen_folios.add(folio)
+                if TaxRecord.objects.filter(folio=folio, is_deleted=False).exists():
+                    row_errors.append('folio duplicado en la base de datos')
+
+            if row_errors:
+                errors.append({'row': index, 'errors': row_errors})
+            else:
+                valid_payload.append({
+                    'folio': folio,
+                    'rut': rut,
+                    'company_name': company_name,
+                    'year': year,
+                    'doc_type': doc_type,
+                    'amount': str(amount),
+                    'origin': origin,
+                })
+
+        job = BulkUploadJob.objects.create(
+            filename=filename,
+            total_rows=len(rows),
+            valid_rows=len(valid_payload),
+            warning_rows=0,
+            error_rows=len(errors),
+            status='Validado' if not errors else 'Validado con errores',
+            errors_json=errors,
+            valid_payload=valid_payload,
+            uploaded_by=request.user,
         )
+        log_action(request, f'Validación de carga masiva {filename}', f'{len(valid_payload)} válidas, {len(errors)} con error')
+        return Response({
+            'batch_id': job.pk,
+            'filename': filename,
+            'total_rows': len(rows),
+            'valid_rows': len(valid_payload),
+            'error_rows': len(errors),
+            'errors': errors,
+            'status': job.status,
+        }, status=status.HTTP_200_OK)
 
 
 class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
@@ -555,7 +756,7 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = AuditLog.objects.all()
     serializer_class = AuditLogSerializer
     permission_classes = [HasRole]
-    allowed_roles = ('auditor', 'supervisor', 'admin')
+    allowed_roles = ('supervisor', 'admin')
 
     def get_queryset(self):
         qs = AuditLog.objects.all()

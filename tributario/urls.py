@@ -5,6 +5,7 @@ from .views import (
     LoginView,
     CurrentUserView,
     AdminUsersView,
+    AdminUserDetailView,
     TaxRecordViewSet,
     ApprovalRequestViewSet,
     BulkUploadView,
@@ -22,6 +23,7 @@ urlpatterns = [
     path('auth/token/refresh/', TokenRefreshView.as_view(), name='token-refresh'),
     path('auth/me/', CurrentUserView.as_view(), name='api-me'),
     path('admin/users/', AdminUsersView.as_view(), name='admin-users'),
+    path('admin/users/<int:pk>/', AdminUserDetailView.as_view(), name='admin-user-detail'),
 
     # Carga masiva
     path('bulk-upload/validate/', BulkUploadView.as_view(), {'action_type': 'validate'}, name='bulk-validate'),
