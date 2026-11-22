@@ -6,6 +6,7 @@ from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
 from django.http import JsonResponse
+from django.views.static import serve
 
 
 def health(request):
@@ -15,6 +16,10 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/v1/health/', health),
     path('api/v1/', include('tributario.urls')),
+]
+
+urlpatterns += [
+    path('static/<path:path>', serve, {'document_root': settings.STATIC_ROOT}),
 ]
 
 if settings.DEBUG:
