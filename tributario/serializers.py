@@ -153,6 +153,12 @@ class TaxRecordDetailSerializer(serializers.ModelSerializer):
         return value
 
     def validate(self, attrs):
+        if self.instance and attrs.get('document_file') and self.instance.document_file:
+            # Inmutabilidad ante el SII: la evidencia original nunca se sobrescribe.
+            raise serializers.ValidationError({
+                'document_file': 'El documento original es inmutable y no puede reemplazarse. '
+                                 'Crea un nuevo expediente para cargar otro documento.',
+            })
         if not self.instance and not attrs.get('document_file'):
             raise serializers.ValidationError({'document_file': 'Adjunta el documento original en PDF.'})
         rut = attrs.get('rut', self.instance.rut if self.instance else None)

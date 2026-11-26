@@ -926,6 +926,7 @@ class OwaspAndComplianceTests(TestCase):
         self.assertEqual(res['X-Content-Type-Options'], 'nosniff')
         self.assertEqual(res.data['company_name'], payload_xss)
 
+    @override_settings(CORS_ALLOWED_ORIGINS=['https://nuam-basics.vercel.app'])
     def test_cors_blocks_unauthorized_third_party_vercel_and_wildcard(self):
         trusted = self.client.options(
             '/api/v1/auth/me/',
@@ -933,6 +934,12 @@ class OwaspAndComplianceTests(TestCase):
             HTTP_ACCESS_CONTROL_REQUEST_METHOD='GET',
         )
         self.assertEqual(trusted.get('Access-Control-Allow-Origin'), 'https://nuam-basics.vercel.app')
+        lookalike = self.client.options(
+            '/api/v1/auth/me/',
+            HTTP_ORIGIN='https://nuam-frontend-evil.vercel.app',
+            HTTP_ACCESS_CONTROL_REQUEST_METHOD='GET',
+        )
+        self.assertIsNone(lookalike.get('Access-Control-Allow-Origin'))
 
         untrusted_vercel = self.client.options(
             '/api/v1/auth/me/',
@@ -1059,3 +1066,94 @@ class PerformanceAndIndexingTests(TestCase):
         update_ms = (time.perf_counter() - t1) * 1000
         self.assertEqual(updated.status_code, 200)
         self.assertLess(update_ms, 2000.0)
+
+
+
+class ComplianceHardeningTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.client = APIClient()
+        self.operator = User.objects.create_user('op-h', 'op-h@nuam.test', 'Strong-Password-123!')
+        UserProfile.objects.create(user=self.operator, role='operador')
+        self.supervisor = User.objects.create_user('sup-h', 'sup-h@nuam.test', 'Strong-Password-123!')
+        UserProfile.objects.create(user=self.supervisor, role='supervisor')
+
+    def _create(self, folio='H-1', pdf=b'%PDF-1.4\noriginal'):
+        return self.client.post('/api/v1/tax-records/', {
+            'folio': folio,
+            'rut': '76.543.210-3',
+            'company_name': f'Empresa {folio}',
+            'year': 2025,
+            'doc_type': 'Certificado tributario',
+            'amount': '1000.00',
+            'document_file': SimpleUploadedFile(f'{folio}.pdf', pdf, content_type='application/pdf'),
+        }, format='multipart')
+
+    def test_original_pdf_cannot_be_replaced(self):
+        self.client.force_authenticate(self.operator)
+        created = self._create()
+        self.assertEqual(created.status_code, 201)
+        response = self.client.patch(f"/api/v1/tax-records/{created.data['id']}/", {
+            'document_file': SimpleUploadedFile('otro.pdf', b'%PDF-1.4\notro', content_type='application/pdf'),
+        }, format='multipart')
+        self.assertEqual(response.status_code, 400)
+        record = TaxRecord.objects.get(pk=created.data['id'])
+        self.assertEqual(record.sha256_hash, created.data['sha256_hash'])
+        download = self.client.get(f'/api/v1/tax-records/{record.pk}/download_pdf/')
+        self.assertEqual(b''.join(download.streaming_content), b'%PDF-1.4\noriginal')
+        download.close()
+
+    def test_bulk_confirm_works_and_skips_logically_deleted_folio(self):
+        self.client.force_authenticate(self.supervisor)
+        TaxRecord.objects.create(folio='BORRADO', rut='76.543.210-3', company_name='X', year=2024, is_deleted=True)
+        csv_file = SimpleUploadedFile(
+            'lote.csv',
+            b'folio,rut,company_name,year,doc_type,amount,origin\n'
+            b'BORRADO,76.543.210-3,Empresa,2025,Certificado tributario,1000,SII\n'
+            b'NUEVO-1,76.111.111-6,Empresa,2025,Certificado tributario,2000,SII\n',
+            content_type='text/csv',
+        )
+        validated = self.client.post('/api/v1/bulk-upload/validate/', {'file': csv_file}, format='multipart')
+        self.assertEqual(validated.data['valid_rows'], 1)
+        self.assertEqual(validated.data['errors'][0]['fields'], ['folio'])
+        self.assertEqual(validated.data['errors'][0]['details'][0]['field'], 'folio')
+        confirmed = self.client.post('/api/v1/bulk-upload/confirm/', {'job_id': validated.data['batch_id']}, format='json')
+        self.assertEqual(confirmed.status_code, 200)
+        self.assertEqual(confirmed.data['created'], 1)
+        missing = self.client.post('/api/v1/bulk-upload/confirm/', {'job_id': 99999}, format='json')
+        self.assertEqual(missing.status_code, 404)
+
+    def test_bulk_reports_exact_column_for_each_error(self):
+        self.client.force_authenticate(self.operator)
+        csv_file = SimpleUploadedFile(
+            'campos.csv',
+            b'folio,rut,company_name,year,doc_type,amount,origin\n'
+            b'F1,76.543.210-3,Empresa,abc,Certificado tributario,-5,SII\n'
+            b'F2,,Empresa,2025,Certificado tributario,10,SII\n',
+            content_type='text/csv',
+        )
+        response = self.client.post('/api/v1/bulk-upload/validate/', {'file': csv_file}, format='multipart')
+        by_row = {error['row']: error for error in response.data['errors']}
+        self.assertEqual(by_row[2]['fields'], ['amount', 'year'])
+        self.assertEqual(by_row[3]['fields'], ['rut'])
+
+    def test_download_serves_the_exact_bytes_that_were_verified(self):
+        self.client.force_authenticate(self.operator)
+        created = self._create('H-BYTES', b'%PDF-1.4\nverificado')
+        response = self.client.get(f"/api/v1/tax-records/{created.data['id']}/download_pdf/")
+        body = b''.join(response.streaming_content)
+        response.close()
+        self.assertEqual(hashlib.sha256(body).hexdigest(), response['X-Integrity-SHA256'])
+
+    @patch.dict('os.environ', {'VERCEL': '1'})
+    def test_audit_ip_uses_forwarded_client_address_behind_proxy(self):
+        self.client.force_authenticate(self.supervisor)
+        self.client.get('/api/v1/tax-records/', HTTP_X_FORWARDED_FOR='200.1.2.3, 76.76.0.1')
+        self.assertTrue(AuditLog.objects.filter(ip_address='200.1.2.3').exists())
+
+    def test_security_headers_and_hardened_settings(self):
+        from django.conf import settings as dj_settings
+        self.assertTrue(dj_settings.SECURE_CONTENT_TYPE_NOSNIFF)
+        self.assertEqual(dj_settings.X_FRAME_OPTIONS, 'DENY')
+        self.assertIn('x-integrity-sha256', dj_settings.CORS_EXPOSE_HEADERS)
+        self.assertEqual(dj_settings.CORS_ALLOWED_ORIGIN_REGEXES, [])

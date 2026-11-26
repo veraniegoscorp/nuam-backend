@@ -142,7 +142,12 @@ else:
             'HOST': db_values['HOST'],
             'PORT': db_values['PORT'],
             'CONN_MAX_AGE': 0 if os.getenv('VERCEL') else 60,
-            'OPTIONS': {'sslmode': os.getenv('DB_SSLMODE', 'require')},
+            # Compatibilidad con Supabase Transaction Pooler (pgbouncer modo transacción).
+            'DISABLE_SERVER_SIDE_CURSORS': True,
+            'OPTIONS': {
+                'sslmode': os.getenv('DB_SSLMODE', 'require'),
+                'prepare_threshold': None,
+            },
         }
         DATABASES['legacy'] = {
             'ENGINE': 'django.db.backends.sqlite3',
@@ -245,8 +250,13 @@ CORS_ALLOWED_ORIGINS = [
 for frontend_url in (os.getenv('FRONTEND_URL', '').strip(),):
     if frontend_url and frontend_url not in CORS_ALLOWED_ORIGINS:
         CORS_ALLOWED_ORIGINS.append(frontend_url)
+# Solo orígenes explícitos (CORS_ALLOWED_ORIGINS / FRONTEND_URL). Los patrones
+# regex quedan desactivados salvo configuración expresa, porque cualquier
+# tercero podría registrar un proyecto Vercel con un nombre coincidente.
 CORS_ALLOWED_ORIGIN_REGEXES = [
-    r'^https://nuam-(basics|mantenedor|frontend|backend)(-[a-zA-Z0-9-]+)?\.vercel\.app$',
+    pattern.strip()
+    for pattern in os.getenv('CORS_ALLOWED_ORIGIN_REGEXES', '').split(',')
+    if pattern.strip()
 ]
 CORS_ALLOW_ALL_ORIGINS = os.getenv('CORS_ALLOW_ALL_ORIGINS', 'false').lower() == 'true'
 CORS_ALLOW_CREDENTIALS = False
@@ -267,6 +277,7 @@ CORS_ALLOW_HEADERS = [
     'x-requested-with',
     'x-integrity-sha256',
 ]
+CORS_EXPOSE_HEADERS = ['x-integrity-sha256', 'content-disposition']
 
 # Django REST Framework configuration
 REST_FRAMEWORK = {
@@ -293,8 +304,16 @@ SIMPLE_JWT = {
 }
 
 SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_REFERRER_POLICY = 'same-origin'
+X_FRAME_OPTIONS = 'DENY'
 
 if not DEBUG:
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
+    # TLS obligatorio: HSTS de 1 año y redirección a HTTPS tras el proxy de Vercel.
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    SECURE_SSL_REDIRECT = True
+    SECURE_HSTS_SECONDS = 31536000
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
 

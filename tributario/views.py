@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import logging
 import math
+import os
 import secrets
 import csv
 import io
@@ -47,6 +48,15 @@ def get_role(user):
     return UserProfile.objects.filter(user=user).values_list('role', flat=True).first()
 
 
+def get_client_ip(request):
+    """IP real del cliente: tras el proxy de Vercel REMOTE_ADDR es la del proxy."""
+    if os.getenv('VERCEL'):
+        forwarded = request.META.get('HTTP_X_FORWARDED_FOR', '')
+        if forwarded:
+            return forwarded.split(',')[0].strip()
+    return request.META.get('REMOTE_ADDR', '127.0.0.1')
+
+
 def log_action(request, action, result, tax_record=None):
     user = request.user
     display_name = user.get_full_name() or user.get_username()
@@ -56,22 +66,37 @@ def log_action(request, action, result, tax_record=None):
         action=action,
         user_name=f'{display_name} · {role}',
         result=result,
-        ip_address=request.META.get('REMOTE_ADDR', '127.0.0.1'),
+        ip_address=get_client_ip(request),
     )
 
 
-def verify_document_hash(record):
+def read_verified_document(record):
+    """Lee el PDF una sola vez y valida su SHA-256 sobre esos mismos bytes.
+
+    Devuelve (verificado, hash_calculado, bytes). Los bytes devueltos son los que
+    se hashearon, de modo que lo verificado es exactamente lo que se entrega.
+    """
     if not record.document_file or not record.sha256_hash:
-        return False, ''
-    with record.document_file.open('rb') as document:
-        hasher = hashlib.sha256()
-        for chunk in iter(lambda: document.read(64 * 1024), b''):
-            hasher.update(chunk)
+        return False, '', b''
+    try:
+        with record.document_file.open('rb') as document:
+            content = document.read()
+    except Exception:
+        logger.exception('No fue posible leer el documento de %s.', record.folio)
+        return False, '', b''
+    hasher = hashlib.sha256()
+    for start in range(0, len(content), 64 * 1024):
+        hasher.update(content[start:start + 64 * 1024])
     actual_hash = hasher.hexdigest()
     verified = hmac.compare_digest(actual_hash, record.sha256_hash)
     if record.is_hash_verified != verified:
         record.is_hash_verified = verified
         record.save(update_fields=['is_hash_verified', 'updated_at'])
+    return verified, actual_hash, content
+
+
+def verify_document_hash(record):
+    verified, actual_hash, _ = read_verified_document(record)
     return verified, actual_hash
 
 
@@ -160,7 +185,7 @@ class LoginView(APIView):
                 action='Intento de inicio de sesión',
                 user_name='Intento de acceso',
                 result='Credenciales incorrectas',
-                ip_address=request.META.get('REMOTE_ADDR', '127.0.0.1'),
+                ip_address=get_client_ip(request),
             )
             return Response(
                 {'detail': 'Las credenciales ingresadas son incorrectas.'},
@@ -175,7 +200,7 @@ class LoginView(APIView):
                 action='Intento de acceso en cuenta bloqueada temporalmente',
                 user_name=f'{user.get_full_name() or user.username} · {profile.get_role_display()}',
                 result='Cuenta bloqueada por intentos 2FA fallidos',
-                ip_address=request.META.get('REMOTE_ADDR', '127.0.0.1'),
+                ip_address=get_client_ip(request),
             )
             return Response(
                 {'detail': 'Cuenta bloqueada temporalmente tras múltiples intentos fallidos de segundo factor.'},
@@ -260,7 +285,7 @@ class LoginView(APIView):
                         if profile.locked_until
                         else 'Código inválido o expirado'
                     ),
-                    ip_address=request.META.get('REMOTE_ADDR', '127.0.0.1'),
+                    ip_address=get_client_ip(request),
                 )
                 return Response(
                     {'detail': 'Código de segundo factor inválido o expirado.'},
@@ -282,7 +307,7 @@ class LoginView(APIView):
             action='Inicio de sesión exitoso (MFA verificado)',
             user_name=f"{user.get_full_name() or user.username} · {profile.get_role_display()}",
             result='Acceso concedido',
-            ip_address=request.META.get('REMOTE_ADDR', '127.0.0.1')
+            ip_address=get_client_ip(request)
         )
 
         refresh = RefreshToken.for_user(user)
@@ -516,7 +541,7 @@ class TaxRecordViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        verified, verified_hash = verify_document_hash(record)
+        verified, verified_hash, content = read_verified_document(record)
         if not verified:
             log_action(request, f'Fallo de integridad del expediente {record.folio}', 'Descarga bloqueada por hash distinto', record)
             return Response(
@@ -525,7 +550,7 @@ class TaxRecordViewSet(viewsets.ModelViewSet):
             )
         log_action(request, f'Descarga de expediente {record.folio}', 'Hash SHA-256 verificado', record)
         response = FileResponse(
-            record.document_file.open('rb'),
+            io.BytesIO(content),
             as_attachment=True,
             filename=record.document_name or f'{record.folio}.pdf',
             content_type='application/pdf',
@@ -625,7 +650,7 @@ class ApprovalRequestViewSet(viewsets.ModelViewSet):
                 action=f'{action_label} de solicitud {approval.code}',
                 user_name=user_name,
                 result=result,
-                ip_address=request.META.get('REMOTE_ADDR', '127.0.0.1'),
+                ip_address=get_client_ip(request),
             )
 
         return Response({
@@ -645,18 +670,17 @@ class BulkUploadView(APIView):
             job_id = request.data.get('job_id') or request.data.get('batch_id')
             if not job_id:
                 return Response({'detail': 'Debe indicar el job_id del lote.'}, status=status.HTTP_400_BAD_REQUEST)
-            try:
-                job = BulkUploadJob.objects.select_for_update().get(pk=job_id)
-            except (BulkUploadJob.DoesNotExist, ValueError):
-                return Response({'detail': 'Lote no encontrado.'}, status=status.HTTP_404_NOT_FOUND)
-            if job.status == 'Confirmado':
-                return Response({'detail': 'El lote ya fue confirmado.'}, status=status.HTTP_409_CONFLICT)
-
             created = 0
             with transaction.atomic():
-                job = BulkUploadJob.objects.select_for_update().get(pk=job_id)
+                try:
+                    job = BulkUploadJob.objects.select_for_update().get(pk=job_id)
+                except (BulkUploadJob.DoesNotExist, ValueError, TypeError):
+                    return Response({'detail': 'Lote no encontrado.'}, status=status.HTTP_404_NOT_FOUND)
+                if job.status == 'Confirmado':
+                    return Response({'detail': 'El lote ya fue confirmado.'}, status=status.HTTP_409_CONFLICT)
                 for row in job.valid_payload:
-                    if TaxRecord.objects.filter(folio=row['folio'], is_deleted=False).exists():
+                    # El folio es unico a nivel de BD, incluso para borrados logicos.
+                    if TaxRecord.objects.filter(folio=row['folio']).exists():
                         continue
                     TaxRecord.objects.create(
                         folio=row['folio'],
@@ -736,9 +760,14 @@ class BulkUploadView(APIView):
             row_errors = []
 
             if not all([folio, rut, company_name, doc_type, origin]):
-                row_errors.append('Campos obligatorios vacíos')
+                for column, value in (
+                    ('folio', folio), ('rut', rut), ('company_name', company_name),
+                    ('doc_type', doc_type), ('origin', origin),
+                ):
+                    if not value:
+                        row_errors.append((column, f'Campo obligatorio vacío: {column}'))
             elif not is_valid_chilean_rut(rut):
-                row_errors.append('RUT inválido según algoritmo Módulo 11')
+                row_errors.append(('rut', 'RUT inválido según algoritmo Módulo 11'))
             else:
                 rut = normalize_chilean_rut(rut)
             try:
@@ -746,7 +775,7 @@ class BulkUploadView(APIView):
                 if year < 1900 or year > 2100:
                     raise ValueError
             except (TypeError, ValueError):
-                row_errors.append('year debe ser un entero válido')
+                row_errors.append(('year', 'year debe ser un entero válido'))
                 year = None
             try:
                 amount_text = str(row.get('amount') or '').strip()
@@ -756,18 +785,23 @@ class BulkUploadView(APIView):
                 if amount < 0:
                     raise InvalidOperation
             except (InvalidOperation, TypeError, ValueError):
-                row_errors.append('amount debe ser un monto válido')
+                row_errors.append(('amount', 'amount debe ser un monto válido'))
                 amount = None
 
             if folio:
                 if folio in seen_folios:
-                    row_errors.append('folio repetido dentro del archivo')
+                    row_errors.append(('folio', 'folio repetido dentro del archivo'))
                 seen_folios.add(folio)
-                if TaxRecord.objects.filter(folio=folio, is_deleted=False).exists():
-                    row_errors.append('folio duplicado en la base de datos')
+                if TaxRecord.objects.filter(folio=folio).exists():
+                    row_errors.append(('folio', 'folio duplicado en la base de datos'))
 
             if row_errors:
-                errors.append({'row': index, 'errors': row_errors})
+                errors.append({
+                    'row': index,
+                    'fields': sorted({column for column, _ in row_errors}),
+                    'errors': [message for _, message in row_errors],
+                    'details': [{'field': column, 'message': message} for column, message in row_errors],
+                })
             else:
                 valid_payload.append({
                     'folio': folio,
