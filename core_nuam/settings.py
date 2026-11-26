@@ -173,9 +173,9 @@ AUTH_PASSWORD_VALIDATORS = [
 # Internationalization
 # https://docs.djangoproject.com/en/6.1/topics/i18n/
 
-LANGUAGE_CODE = 'en-us'
+LANGUAGE_CODE = 'es-cl'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'America/Santiago'
 
 USE_I18N = True
 
@@ -246,7 +246,7 @@ for frontend_url in (os.getenv('FRONTEND_URL', '').strip(),):
     if frontend_url and frontend_url not in CORS_ALLOWED_ORIGINS:
         CORS_ALLOWED_ORIGINS.append(frontend_url)
 CORS_ALLOWED_ORIGIN_REGEXES = [
-    r'^https://([a-zA-Z0-9-]+\.)+vercel\.app$',
+    r'^https://nuam-(basics|mantenedor|frontend|backend)(-[a-zA-Z0-9-]+)?\.vercel\.app$',
 ]
 CORS_ALLOW_ALL_ORIGINS = os.getenv('CORS_ALLOW_ALL_ORIGINS', 'false').lower() == 'true'
 CORS_ALLOW_CREDENTIALS = False
@@ -292,8 +292,9 @@ SIMPLE_JWT = {
     'AUTH_HEADER_TYPES': ('Bearer',),
 }
 
+SECURE_CONTENT_TYPE_NOSNIFF = True
+
 if not DEBUG:
-    SECURE_CONTENT_TYPE_NOSNIFF = True
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
 

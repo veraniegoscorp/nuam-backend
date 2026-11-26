@@ -69,7 +69,7 @@ class Command(BaseCommand):
         records_data = [
             {
                 'folio': 'CERT-2025-0148',
-                'rut': '76.543.210-8',
+                'rut': '76.543.210-3',
                 'company_name': 'Inversiones Andinas S.A.',
                 'year': 2025,
                 'country': 'Chile',
@@ -95,7 +95,7 @@ class Command(BaseCommand):
             },
             {
                 'folio': 'CERT-2025-0149',
-                'rut': '77.125.680-4',
+                'rut': '77.125.680-5',
                 'company_name': 'Servicios del Pacífico SpA',
                 'year': 2025,
                 'country': 'Chile',
@@ -119,7 +119,7 @@ class Command(BaseCommand):
             },
             {
                 'folio': 'CERT-2025-0150',
-                'rut': '76.284.931-6',
+                'rut': '76.284.931-3',
                 'company_name': 'Comercial Los Alerces Ltda.',
                 'year': 2025,
                 'country': 'Chile',

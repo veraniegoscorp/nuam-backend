@@ -1,8 +1,11 @@
 import hashlib
+from decimal import Decimal
 
 from rest_framework import serializers
 from django.contrib.auth.models import User
+from django.utils import timezone
 from .models import UserProfile, TaxRecord, TaxFactor, ApprovalRequest, AuditLog, BulkUploadJob
+from .validators import normalize_chilean_rut
 
 
 class UserProfileSerializer(serializers.ModelSerializer):
@@ -54,7 +57,7 @@ class AuditLogSerializer(serializers.ModelSerializer):
         fields = ['id', 'tax_record', 'action', 'user_name', 'result', 'ip_address', 'timestamp', 'formatted_date']
 
     def get_formatted_date(self, obj):
-        return obj.timestamp.strftime('%d/%m/%Y · %H:%M')
+        return timezone.localtime(obj.timestamp).strftime('%d/%m/%Y · %H:%M')
 
 
 class TaxRecordListSerializer(serializers.ModelSerializer):
@@ -118,6 +121,17 @@ class TaxRecordDetailSerializer(serializers.ModelSerializer):
     def get_is_hash_verified(self, obj):
         return bool(obj.document_file and obj.is_hash_verified and obj.sha256_hash)
 
+    def validate_rut(self, value):
+        try:
+            return normalize_chilean_rut(value)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc))
+
+    def validate_amount(self, value):
+        if value is not None and value < Decimal('0.00'):
+            raise serializers.ValidationError('El monto financiero no puede ser negativo.')
+        return value
+
     def validate_document_file(self, value):
         if value.size > 25 * 1024 * 1024:
             raise serializers.ValidationError('El documento no puede superar 25 MB.')
@@ -179,7 +193,7 @@ class ApprovalRequestSerializer(serializers.ModelSerializer):
         ]
 
     def get_formatted_date(self, obj):
-        return obj.created_at.strftime('%d/%m/%Y · %H:%M')
+        return timezone.localtime(obj.created_at).strftime('%d/%m/%Y · %H:%M')
 
 
 class ApprovalResolveSerializer(serializers.Serializer):

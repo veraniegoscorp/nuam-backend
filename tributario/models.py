@@ -1,4 +1,6 @@
 import hashlib
+from decimal import Decimal
+from django.core.validators import MinValueValidator
 from django.db import models
 from django.contrib.auth.models import User
 
@@ -7,6 +9,7 @@ class UserProfile(models.Model):
     ROLE_CHOICES = (
         ('operador', 'Operador'),
         ('supervisor', 'Supervisor'),
+        ('auditor', 'Auditor'),
         ('admin', 'Administrador'),
     )
     COUNTRY_CHOICES = (
@@ -20,6 +23,7 @@ class UserProfile(models.Model):
     two_factor_code_expires_at = models.DateTimeField(null=True, blank=True)
     two_factor_code_sent_at = models.DateTimeField(null=True, blank=True)
     two_factor_attempts = models.PositiveSmallIntegerField(default=0)
+    locked_until = models.DateTimeField(null=True, blank=True)
     is_2fa_enabled = models.BooleanField(default=True)
 
     def __str__(self):
@@ -44,7 +48,12 @@ class TaxRecord(models.Model):
     country = models.CharField(max_length=50, choices=COUNTRY_CHOICES, default='Chile', db_index=True)
     doc_type = models.CharField(max_length=100, default='Certificado tributario', db_index=True)
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default='Pendiente de aprobación')
-    amount = models.DecimalField(max_digits=18, decimal_places=2, default=0.0)
+    amount = models.DecimalField(
+        max_digits=18,
+        decimal_places=2,
+        default=Decimal('0.00'),
+        validators=[MinValueValidator(Decimal('0.00'))],
+    )
     currency = models.CharField(max_length=10, default='CLP')
     origin = models.CharField(max_length=100, default='Bolsa de Santiago')
     document_name = models.CharField(max_length=255, default='documento.pdf')
@@ -59,6 +68,11 @@ class TaxRecord(models.Model):
 
     class Meta:
         ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['folio', 'rut', 'year'], name='idx_taxrec_folio_rut_year'),
+            models.Index(fields=['rut', 'company_name', 'year'], name='idx_taxrec_rut_comp_year'),
+            models.Index(fields=['year', 'doc_type', 'status'], name='idx_taxrec_year_type_stat'),
+        ]
 
     def __str__(self):
         return f"{self.folio} - {self.company_name} ({self.year})"

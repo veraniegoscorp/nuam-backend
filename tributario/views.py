@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import logging
+import math
 import secrets
 import csv
 import io
@@ -16,6 +17,7 @@ from django.contrib.auth.models import User
 from django.contrib.auth.hashers import check_password, make_password
 from django.core.mail import send_mail
 from rest_framework import viewsets, status, permissions
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -23,6 +25,7 @@ from rest_framework.decorators import action
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from .models import UserProfile, TaxRecord, ApprovalRequest, AuditLog, BulkUploadJob
+from .validators import is_valid_chilean_rut, normalize_chilean_rut
 from .serializers import (
     UserSerializer,
     UserNameUpdateSerializer,
@@ -82,13 +85,32 @@ class HasRole(permissions.BasePermission):
         )
 
 
+class TaxRecordPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+
+    def get_paginated_response(self, data):
+        page_size = self.get_page_size(self.request) or self.page_size
+        total_pages = math.ceil(self.page.paginator.count / page_size) if self.page.paginator.count else 1
+        return Response({
+            'count': self.page.paginator.count,
+            'page': self.page.number,
+            'page_size': page_size,
+            'total_pages': total_pages,
+            'next': self.get_next_link(),
+            'previous': self.get_previous_link(),
+            'results': data,
+        })
+
+
 class TaxRecordPermissions(permissions.BasePermission):
     def has_permission(self, request, view):
         if not request.user.is_authenticated:
             return False
         role = get_role(request.user)
         if request.method in permissions.SAFE_METHODS:
-            return role in ('operador', 'supervisor', 'admin')
+            return role in ('operador', 'supervisor', 'auditor', 'admin')
         if request.method == 'DELETE':
             return role in ('supervisor', 'admin')
         return role in ('operador', 'supervisor', 'admin')
@@ -101,7 +123,7 @@ class ApprovalPermissions(permissions.BasePermission):
         role = get_role(request.user)
         if getattr(view, 'action', '') == 'resolve':
             return role in ('supervisor', 'admin')
-        return request.method in permissions.SAFE_METHODS and role in ('supervisor', 'admin')
+        return request.method in permissions.SAFE_METHODS and role in ('supervisor', 'auditor', 'admin')
 
 
 class BulkUploadPermissions(HasRole):
@@ -147,8 +169,20 @@ class LoginView(APIView):
 
         profile, _ = UserProfile.objects.get_or_create(user=user)
 
+        now = timezone.now()
+        if profile.locked_until and profile.locked_until > now:
+            AuditLog.objects.create(
+                action='Intento de acceso en cuenta bloqueada temporalmente',
+                user_name=f'{user.get_full_name() or user.username} · {profile.get_role_display()}',
+                result='Cuenta bloqueada por intentos 2FA fallidos',
+                ip_address=request.META.get('REMOTE_ADDR', '127.0.0.1'),
+            )
+            return Response(
+                {'detail': 'Cuenta bloqueada temporalmente tras múltiples intentos fallidos de segundo factor.'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
         if profile.is_2fa_enabled and not two_factor_code:
-            now = timezone.now()
             cooldown_active = (
                 profile.two_factor_code_hash
                 and profile.two_factor_code_sent_at
@@ -160,11 +194,13 @@ class LoginView(APIView):
                 profile.two_factor_code_expires_at = now + timedelta(minutes=5)
                 profile.two_factor_code_sent_at = now
                 profile.two_factor_attempts = 0
+                profile.locked_until = None
                 profile.save(update_fields=[
                     'two_factor_code_hash',
                     'two_factor_code_expires_at',
                     'two_factor_code_sent_at',
                     'two_factor_attempts',
+                    'locked_until',
                 ])
                 try:
                     send_mail(
@@ -211,11 +247,19 @@ class LoginView(APIView):
             ):
                 if code_is_current:
                     profile.two_factor_attempts += 1
-                    profile.save(update_fields=['two_factor_attempts'])
+                    update_fields = ['two_factor_attempts']
+                    if profile.two_factor_attempts >= 5:
+                        profile.locked_until = timezone.now() + timedelta(minutes=15)
+                        update_fields.append('locked_until')
+                    profile.save(update_fields=update_fields)
                 AuditLog.objects.create(
                     action='Intento de verificación 2FA',
                     user_name=f'{user.get_full_name() or user.username} · {profile.get_role_display()}',
-                    result='Código inválido o expirado',
+                    result=(
+                        'Cuenta bloqueada tras 5 fallos consecutivos'
+                        if profile.locked_until
+                        else 'Código inválido o expirado'
+                    ),
                     ip_address=request.META.get('REMOTE_ADDR', '127.0.0.1'),
                 )
                 return Response(
@@ -225,10 +269,12 @@ class LoginView(APIView):
             profile.two_factor_code_hash = ''
             profile.two_factor_code_expires_at = None
             profile.two_factor_attempts = 0
+            profile.locked_until = None
             profile.save(update_fields=[
                 'two_factor_code_hash',
                 'two_factor_code_expires_at',
                 'two_factor_attempts',
+                'locked_until',
             ])
 
         # Registrar evento de auditoría de inicio de sesión
@@ -330,7 +376,7 @@ class AdminUserDetailView(APIView):
         changes = []
 
         if role is not None:
-            if role not in ('admin', 'operador', 'supervisor'):
+            if role not in ('admin', 'operador', 'supervisor', 'auditor'):
                 return Response({'role': ['Rol inválido.']}, status=status.HTTP_400_BAD_REQUEST)
             if profile.role != role:
                 profile.role = role
@@ -362,6 +408,7 @@ class TaxRecordViewSet(viewsets.ModelViewSet):
     CRUD completo y búsqueda indexada de expedientes tributarios.
     """
     permission_classes = [TaxRecordPermissions]
+    pagination_class = TaxRecordPagination
 
     def list(self, request, *args, **kwargs):
         response = super().list(request, *args, **kwargs)
@@ -391,7 +438,9 @@ class TaxRecordViewSet(viewsets.ModelViewSet):
                 Q(rut__icontains=search) |
                 Q(company_name__icontains=search) |
                 Q(folio__icontains=search) |
-                Q(doc_type__icontains=search)
+                Q(doc_type__icontains=search) |
+                Q(notes__icontains=search) |
+                Q(origin__icontains=search)
             )
 
         # Filtro por ejercicio (año)
@@ -688,6 +737,10 @@ class BulkUploadView(APIView):
 
             if not all([folio, rut, company_name, doc_type, origin]):
                 row_errors.append('Campos obligatorios vacíos')
+            elif not is_valid_chilean_rut(rut):
+                row_errors.append('RUT inválido según algoritmo Módulo 11')
+            else:
+                rut = normalize_chilean_rut(rut)
             try:
                 year = int(str(row.get('year')).strip())
                 if year < 1900 or year > 2100:
@@ -743,9 +796,15 @@ class BulkUploadView(APIView):
             'filename': filename,
             'total_rows': len(rows),
             'valid_rows': len(valid_payload),
+            'warning_rows': 0,
             'error_rows': len(errors),
             'errors': errors,
             'status': job.status,
+            'message': (
+                'Validación completada sin inconsistencias. Lote listo para confirmar.'
+                if not errors
+                else f'Se detectaron {len(errors)} fila(s) con inconsistencias que no serán incorporadas.'
+            ),
         }, status=status.HTTP_200_OK)
 
 
@@ -756,7 +815,7 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = AuditLog.objects.all()
     serializer_class = AuditLogSerializer
     permission_classes = [HasRole]
-    allowed_roles = ('supervisor', 'admin')
+    allowed_roles = ('supervisor', 'auditor', 'admin')
 
     def get_queryset(self):
         qs = AuditLog.objects.all()
